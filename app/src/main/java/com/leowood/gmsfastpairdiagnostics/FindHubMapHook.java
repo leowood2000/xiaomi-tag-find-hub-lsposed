@@ -87,10 +87,10 @@ final class FindHubMapHook {
     private static final Map<Object, Coordinate> ORIGINAL_COORDINATES =
             new WeakHashMap<>();
     /**
-     * Find Hub's recenter control writes a fresh copy of the selected device's
-     * raw coordinate into a separate camera-state pipeline. Remember marker
-     * pairs so only known device targets are corrected; arbitrary camera
-     * positions created by user panning remain untouched.
+     * Find Hub's recenter controls write fresh copies of selected-device or
+     * blue-dot coordinates into a separate camera-state pipeline. Remember
+     * known raw/corrected pairs so arbitrary camera positions created by user
+     * panning remain untouched.
      */
     private static final Map<String, Coordinate> MARKER_CAMERA_TARGETS =
             new HashMap<>();
@@ -218,6 +218,12 @@ final class FindHubMapHook {
                             }
                             Coordinate result = wgs84ToGcj02(
                                     sourceLatitude, sourceLongitude);
+                            // The People tab's crosshair recenters on the
+                            // built-in blue location dot rather than a Find
+                            // Hub marker. Register the same raw/corrected pair
+                            // so its camera target follows the corrected dot.
+                            rememberCameraTarget(
+                                    sourceLatitude, sourceLongitude, result);
                             param.setResult(latitude
                                     ? result.latitude : result.longitude);
                         } finally {
@@ -265,7 +271,7 @@ final class FindHubMapHook {
                     rememberOriginal(
                             point, new Coordinate(latitude, longitude));
                 }
-                rememberMarkerTarget(latitude, longitude, result);
+                rememberCameraTarget(latitude, longitude, result);
                 setDouble(point, "b", result.latitude);
                 setDouble(point, "c", result.longitude);
                 converted++;
@@ -323,7 +329,7 @@ final class FindHubMapHook {
         }
     }
 
-    private static void rememberMarkerTarget(
+    private static void rememberCameraTarget(
             double latitude, double longitude, Coordinate corrected) {
         synchronized (MARKER_CAMERA_TARGETS) {
             if (MARKER_CAMERA_TARGETS.size() >= 256) {
