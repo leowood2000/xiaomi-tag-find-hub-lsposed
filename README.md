@@ -91,11 +91,11 @@ adb logcat -v time | Select-String FindHubMapFix
 位置层使用一致的坐标。该 Hook 不修改底层 Android `Location` 对象、
 GMS 定位、网络请求或云端保存的数据。
 
-坐标处理同时考虑位置和地图类型：
+坐标处理同时考虑位置：
 
 | 位置 / 图层 | 默认矢量图 | 地形图 | 卫星 / 混合卫星图 |
 | --- | --- | --- | --- |
-| 中国大陆 | 完整 WGS-84 → GCJ-02 非线性转换 | 完整 WGS-84 → GCJ-02 非线性转换 | 保持 WGS-84 |
+| 中国大陆 | 完整 WGS-84 → GCJ-02 非线性转换 | 完整 WGS-84 → GCJ-02 非线性转换 | 完整 WGS-84 → GCJ-02 非线性转换 |
 | 中国大陆以外 | 保持 WGS-84 | 保持 WGS-84 | 保持 WGS-84 |
 
 中国大陆判断使用边界多边形而不是简单经纬度矩形，并显式排除香港、
@@ -117,7 +117,8 @@ GitHub Actions 也会构建 APK，并将其作为 workflow artifact 上传。
 ## 兼容性与风险
 
 - 本模块依赖 Google Play 服务 `26.26.34` 中的混淆类名和方法名。GMS 更新后这些名称可能变化，模块可能失效。
-- 地图修正依赖 Find Hub `3.1.636-1` 的混淆类 `hfo` 及其 `aN` 方法；Find Hub 更新后需重新确认调用点。
+- 地图修正已适配 Find Hub `3.1.636-1`（`hfo#aN`）和
+  `3.1.664-3`（`hwi#aM`）；Find Hub 后续更新混淆名称时仍需重新确认调用点。
 - 大陆边界为简化多边形；紧邻陆地国境线的少量坐标理论上可能被误判，普通境外城市和常规旅行地点不受影响。
 - 目前只对 `15D23E` 做了资格绕过；国行版 Xiaomi Tag 或其他 tracker 是否使用相同 model ID，需要单独验证。
 - 开启 self-location reporting 后，Find Hub 会按照 Google 的产品机制保存或上报设备的最后位置。请只在理解该功能并接受其隐私影响时使用。
@@ -140,3 +141,7 @@ GitHub Actions 也会构建 APK，并将其作为 workflow artifact 上传。
 `Xiaomi Tag · Find Hub 修复`。内部包名仍保留
 `com.leowood.gmsfastpairdiagnostics`，确保旧版本可以直接覆盖升级，
 无需重新配置 LSPosed 作用域。
+
+`v0.9.4` 适配 Find Hub `3.1.664-3` 的设备 Marker 和相机聚焦调用点，
+并根据实机卫星底图验证，在中国大陆对所有地图图层统一使用 GCJ-02，
+同时保留旧版兼容。

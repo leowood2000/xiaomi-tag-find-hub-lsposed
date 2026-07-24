@@ -85,21 +85,29 @@ final class FindHubMapHook {
             new WeakHashMap<>();
     private static final ThreadLocal<Boolean> READING_LOCATION =
             new ThreadLocal<>();
-    private static volatile int currentMapType = 1;
 
     private FindHubMapHook() {
     }
 
     static void install(ClassLoader loader, String processName) {
-        Class<?> fragment = XposedHelpers.findClassIfExists("hfo", loader);
-        if (fragment == null) {
-            log("unsupported Find Hub build: hfo not found");
-            return;
-        }
+        int markerHooks = 0;
+        markerHooks += hookMarkerPipeline(loader, "hwi", "aM");
+        markerHooks += hookMarkerPipeline(loader, "hfo", "aN");
+        log("loaded process=" + processName
+                + " markerHooks=" + markerHooks);
+        hookMapLocationLayer();
+    }
 
+    private static int hookMarkerPipeline(
+            ClassLoader loader, String className, String methodName) {
+        Class<?> fragment = XposedHelpers.findClassIfExists(className, loader);
+        if (fragment == null) {
+            log("marker pipeline class not found " + className);
+            return 0;
+        }
         Set<XC_MethodHook.Unhook> hooks = XposedBridge.hookAllMethods(
                 fragment,
-                "aN",
+                methodName,
                 new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) {
@@ -110,55 +118,9 @@ final class FindHubMapHook {
                         convertMarkerCollection(param.args[0]);
                     }
                 });
-        log("loaded process=" + processName + " hfo#aN overloads=" + hooks.size());
-        hookMapType(loader);
-        hookMapLocationLayer();
-    }
-
-    private static void hookMapType(ClassLoader loader) {
-        Class<?> googleMap = XposedHelpers.findClassIfExists("ill", loader);
-        if (googleMap == null) {
-            log("map type wrapper ill not found");
-            return;
-        }
-        XposedBridge.hookAllMethods(
-                googleMap,
-                "b",
-                new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) {
-                        if (param.args != null && param.args.length == 1
-                                && param.args[0] instanceof Integer) {
-                            currentMapType = (Integer) param.args[0];
-                            updateRememberedPointsForMapType();
-                            log("map type=" + currentMapType
-                                    + " satellite=" + isSatelliteMap());
-                        }
-                    }
-                });
-    }
-
-    private static void updateRememberedPointsForMapType() {
-        synchronized (ORIGINAL_COORDINATES) {
-            for (Map.Entry<Object, Coordinate> entry
-                    : ORIGINAL_COORDINATES.entrySet()) {
-                Object point = entry.getKey();
-                Coordinate original = entry.getValue();
-                if (point == null || original == null) {
-                    continue;
-                }
-                try {
-                    Coordinate display = isSatelliteMap()
-                            ? original
-                            : wgs84ToGcj02(
-                                    original.latitude, original.longitude);
-                    setDouble(point, "b", display.latitude);
-                    setDouble(point, "c", display.longitude);
-                } catch (Throwable error) {
-                    log("cannot update remembered marker: " + error);
-                }
-            }
-        }
+        log("marker pipeline " + className + "#" + methodName
+                + " overloads=" + hooks.size());
+        return hooks.size();
     }
 
     /**
@@ -181,7 +143,6 @@ final class FindHubMapHook {
                         if (param.hasThrowable()
                                 || !(param.getResult() instanceof Number)
                                 || Boolean.TRUE.equals(READING_LOCATION.get())
-                                || isSatelliteMap()
                                 || !isGoogleMapLocationCall()) {
                             return;
                         }
@@ -234,14 +195,6 @@ final class FindHubMapHook {
                 }
 
                 Coordinate original = getOriginal(point);
-                if (isSatelliteMap()) {
-                    if (original != null) {
-                        setDouble(point, "b", original.latitude);
-                        setDouble(point, "c", original.longitude);
-                    }
-                    continue;
-                }
-
                 double latitude = original != null
                         ? original.latitude : getDouble(point, "b");
                 double longitude = original != null
@@ -298,10 +251,6 @@ final class FindHubMapHook {
         Field field = target.getClass().getDeclaredField(name);
         field.setAccessible(true);
         field.setDouble(target, value);
-    }
-
-    private static boolean isSatelliteMap() {
-        return currentMapType == 2 || currentMapType == 4;
     }
 
     private static Coordinate getOriginal(Object point) {
