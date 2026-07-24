@@ -43,6 +43,12 @@ jobs:
               -dname "CN=Android Debug,O=Android,C=US"
           fi
 
+      - name: Export signing key for migration
+        uses: actions/upload-artifact@v4
+        with:
+          name: signing-key-migration
+          path: /home/runner/.android/debug.keystore
+
       - name: Build LSPosed APK
         env:
           CI_DEBUG_KEYSTORE: /home/runner/.android/debug.keystore
