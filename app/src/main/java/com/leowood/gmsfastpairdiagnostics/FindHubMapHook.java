@@ -4,6 +4,8 @@ import android.location.Location;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Locale;
 import java.util.Map;
@@ -17,9 +19,10 @@ import de.robv.android.xposed.XposedHelpers;
 /**
  * Corrects Find Hub's WGS-84 device coordinates at its map UI boundary.
  *
- * <p>The hook is deliberately limited to the obfuscated Find Hub 3.1.636-1
- * marker pipeline. It does not alter Android Location, GMS, stored locations,
- * network requests, or coordinates outside the GCJ-02 coverage guard.</p>
+ * <p>The hook is deliberately limited to Find Hub's marker, device-camera,
+ * and Google Maps location display pipelines. It does not alter GMS, stored
+ * locations, network requests, or coordinates outside the GCJ-02 coverage
+ * guard.</p>
  */
 final class FindHubMapHook {
     private static final String TAG = "[FindHubMapFix] ";
@@ -83,6 +86,16 @@ final class FindHubMapHook {
      */
     private static final Map<Object, Coordinate> ORIGINAL_COORDINATES =
             new WeakHashMap<>();
+    /**
+     * Find Hub's recenter control writes a fresh copy of the selected device's
+     * raw coordinate into a separate camera-state pipeline. Remember marker
+     * pairs so only known device targets are corrected; arbitrary camera
+     * positions created by user panning remain untouched.
+     */
+    private static final Map<String, Coordinate> MARKER_CAMERA_TARGETS =
+            new HashMap<>();
+    private static final Set<String> CORRECTED_CAMERA_TARGETS =
+            new HashSet<>();
     private static final ThreadLocal<Boolean> READING_LOCATION =
             new ThreadLocal<>();
 
@@ -93,8 +106,10 @@ final class FindHubMapHook {
         int markerHooks = 0;
         markerHooks += hookMarkerPipeline(loader, "hwi", "aM");
         markerHooks += hookMarkerPipeline(loader, "hfo", "aN");
+        int cameraHooks = hookDeviceCameraPipeline(loader, "odd", "n");
         log("loaded process=" + processName
-                + " markerHooks=" + markerHooks);
+                + " markerHooks=" + markerHooks
+                + " cameraHooks=" + cameraHooks);
         hookMapLocationLayer();
     }
 
@@ -119,6 +134,48 @@ final class FindHubMapHook {
                     }
                 });
         log("marker pipeline " + className + "#" + methodName
+                + " overloads=" + hooks.size());
+        return hooks.size();
+    }
+
+    private static int hookDeviceCameraPipeline(
+            ClassLoader loader, String className, String methodName) {
+        Class<?> cameraState = XposedHelpers.findClassIfExists(
+                className, loader);
+        if (cameraState == null) {
+            log("camera pipeline class not found " + className);
+            return 0;
+        }
+        Set<XC_MethodHook.Unhook> hooks = XposedBridge.hookAllMethods(
+                cameraState,
+                methodName,
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (param.args == null || param.args.length != 3
+                                || !(param.args[0] instanceof Number)
+                                || !(param.args[1] instanceof Number)
+                                || !(param.args[2] instanceof Number)) {
+                            return;
+                        }
+                        double latitude =
+                                ((Number) param.args[0]).doubleValue();
+                        double longitude =
+                                ((Number) param.args[1]).doubleValue();
+                        Coordinate result = correctedMarkerTarget(
+                                latitude, longitude);
+                        if (result == null) {
+                            return;
+                        }
+                        param.args[0] = result.latitude;
+                        param.args[1] = result.longitude;
+                        log("camera " + format(latitude) + ","
+                                + format(longitude) + " -> "
+                                + format(result.latitude) + ","
+                                + format(result.longitude));
+                    }
+                });
+        log("camera pipeline " + className + "#" + methodName
                 + " overloads=" + hooks.size());
         return hooks.size();
     }
@@ -208,6 +265,7 @@ final class FindHubMapHook {
                     rememberOriginal(
                             point, new Coordinate(latitude, longitude));
                 }
+                rememberMarkerTarget(latitude, longitude, result);
                 setDouble(point, "b", result.latitude);
                 setDouble(point, "c", result.longitude);
                 converted++;
@@ -263,6 +321,36 @@ final class FindHubMapHook {
         synchronized (ORIGINAL_COORDINATES) {
             ORIGINAL_COORDINATES.put(point, original);
         }
+    }
+
+    private static void rememberMarkerTarget(
+            double latitude, double longitude, Coordinate corrected) {
+        synchronized (MARKER_CAMERA_TARGETS) {
+            if (MARKER_CAMERA_TARGETS.size() >= 256) {
+                MARKER_CAMERA_TARGETS.clear();
+                CORRECTED_CAMERA_TARGETS.clear();
+            }
+            MARKER_CAMERA_TARGETS.put(
+                    coordinateKey(latitude, longitude), corrected);
+            CORRECTED_CAMERA_TARGETS.add(coordinateKey(
+                    corrected.latitude, corrected.longitude));
+        }
+    }
+
+    private static Coordinate correctedMarkerTarget(
+            double latitude, double longitude) {
+        String key = coordinateKey(latitude, longitude);
+        synchronized (MARKER_CAMERA_TARGETS) {
+            if (CORRECTED_CAMERA_TARGETS.contains(key)) {
+                return null;
+            }
+            return MARKER_CAMERA_TARGETS.get(key);
+        }
+    }
+
+    private static String coordinateKey(double latitude, double longitude) {
+        return Math.round(latitude * 10000000.0) + ":"
+                + Math.round(longitude * 10000000.0);
     }
 
     /**
