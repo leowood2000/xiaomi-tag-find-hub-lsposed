@@ -14,6 +14,10 @@
 
 其他手机、系统版本、Google Play 服务版本或 Tag 型号不保证可用。
 
+> [!IMPORTANT]
+> 当前版本只适用于国际版 Xiaomi Tag（Fast Pair model ID `15D23E`）。
+> 不适用于国行版 Xiaomi Tag，请勿在国行版 Tag 上使用。
+
 ## 下载与安装
 
 从 [Releases](https://github.com/leowood2000/xiaomi-tag-find-hub-lsposed/releases/latest) 下载 APK，然后：
@@ -120,7 +124,8 @@ GitHub Actions 也会构建 APK，并将其作为 workflow artifact 上传。
 - 地图修正已适配 Find Hub `3.1.636-1`（`hfo#aN`）和
   `3.1.664-3`（`hwi#aM`）；Find Hub 后续更新混淆名称时仍需重新确认调用点。
 - 大陆边界为简化多边形；紧邻陆地国境线的少量坐标理论上可能被误判，普通境外城市和常规旅行地点不受影响。
-- 目前只对 `15D23E` 做了资格绕过；国行版 Xiaomi Tag 或其他 tracker 是否使用相同 model ID，需要单独验证。
+- 目前只支持国际版 Xiaomi Tag（model ID `15D23E`），不适用于国行版
+  Xiaomi Tag；其他 tracker 也不在支持范围内。
 - 开启 self-location reporting 后，Find Hub 会按照 Google 的产品机制保存或上报设备的最后位置。请只在理解该功能并接受其隐私影响时使用。
 - Root、LSPosed、修改 Google Play 服务行为均有风险。本项目仅用于研究与个人测试，不保证适用于所有设备，也不保证通过任何完整性检查。
 
