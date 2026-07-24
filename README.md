@@ -20,7 +20,10 @@
 
 ## 下载与安装
 
-从 [Releases](https://github.com/leowood2000/xiaomi-tag-find-hub-lsposed/releases/latest) 下载 APK，然后：
+从 [Xposed Modules Repo Releases](https://github.com/Xposed-Modules-Repo/com.leowood.gmsfastpairdiagnostics/releases/latest)
+下载正式 APK。项目开发与固定签名构建源位于
+[leowood2000/xiaomi-tag-find-hub-lsposed](https://github.com/leowood2000/xiaomi-tag-find-hub-lsposed)。
+然后：
 
 1. 安装 APK。
 2. 在 LSPosed 中启用本模块。
