@@ -1,12 +1,16 @@
 package com.leowood.gmsfastpairdiagnostics;
 
 import android.content.ComponentName;
+import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.net.Network;
+import android.os.SystemClock;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -38,6 +42,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
     private static final Pattern MAC =
             Pattern.compile("(?i)([0-9a-f]{2}:){5}[0-9a-f]{2}");
     private static final Set<String> HOOKED = new HashSet<>();
+    private static volatile long CLOUD_UPLOAD_ACTIVE_UNTIL;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -55,10 +60,352 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         hookSpotFastPairServerFlag(lpparam.classLoader);
         hookSelfLocationReportingFlag(lpparam.classLoader);
         hookFastPairSpotIntegrationFlag(lpparam.classLoader);
+        hookFmdnSettingsUiFlag(lpparam.classLoader);
+        hookFindMyDeviceSettingsResponse(lpparam.classLoader);
+        hookProvisioningState(lpparam.classLoader);
+        hookUploadSchedulerParameters(lpparam.classLoader);
+        hookOwnerSightingFastUpload(lpparam.classLoader);
+        hookCloudUploadNetworkBinding();
+        hookLocationReportPipeline(lpparam.classLoader);
         hookFinalDecision(lpparam.classLoader);
         hookLocatorTagEligibility(lpparam.classLoader);
         hookEligibilityPredicates(lpparam.classLoader);
         hookInitialPairingObserver(lpparam.classLoader);
+    }
+
+    /**
+     * The settings activity chooses the legacy page unless kbim.m() is true.
+     * Exposing the complete FMDN page is diagnostic only: it does not alter the
+     * stored network mode or claim that the phone is provisioned.
+     */
+    private static void hookFmdnSettingsUiFlag(ClassLoader loader) {
+        Class<?> flags = XposedHelpers.findClassIfExists("kbim", loader);
+        if (flags == null) {
+            log("kbim FMDN settings UI gate not found");
+            return;
+        }
+
+        String key = flags.getName() + "#m:openFmdnSettings";
+        if (!HOOKED.add(key)) {
+            return;
+        }
+
+        Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                flags,
+                "m",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (param.hasThrowable() || !(param.getResult() instanceof Boolean)) {
+                            return;
+                        }
+                        boolean original = (Boolean) param.getResult();
+                        if (!original) {
+                            param.setResult(true);
+                        }
+                        log("FMDN settings UI gate original=" + original + " effective=true");
+                    }
+                });
+        log("hooked " + key + " overloads=" + unhooks.size());
+    }
+
+    private static void hookFindMyDeviceSettingsResponse(ClassLoader loader) {
+        Class<?> response = XposedHelpers.findClassIfExists(
+                "com.google.android.gms.findmydevice.spot.GetFindMyDeviceSettingsResponse",
+                loader);
+        if (response == null) {
+            log("GetFindMyDeviceSettingsResponse not found");
+            return;
+        }
+
+        String key = response.getName() + "#constructors:diagnostic";
+        if (!HOOKED.add(key)) {
+            return;
+        }
+
+        Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllConstructors(
+                response,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        log("FMDN settings response=" + describePrimitiveFields(param.thisObject));
+                    }
+                });
+        log("hooked " + key + " overloads=" + unhooks.size());
+    }
+
+    /**
+     * cboc.j(gtlt) is the provisioning predicate used before a self-location
+     * report is accepted. Only non-sensitive scalar state is logged.
+     */
+    private static void hookProvisioningState(ClassLoader loader) {
+        Class<?> provisioning = XposedHelpers.findClassIfExists("cboc", loader);
+        if (provisioning == null) {
+            log("cboc provisioning state reader not found");
+            return;
+        }
+
+        String key = provisioning.getName() + "#j:provisioningDiagnostic";
+        if (!HOOKED.add(key)) {
+            return;
+        }
+
+        Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                provisioning,
+                "j",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (param.hasThrowable() || !(param.getResult() instanceof Boolean)) {
+                            return;
+                        }
+                        Object state = param.args != null && param.args.length > 0
+                                ? param.args[0] : null;
+                        log("FMDN provisioned=" + param.getResult()
+                                + " state=" + describeNamedFields(state, "b", "c", "g")
+                                + " nestedK=" + describeNamedNestedField(state, "k", "b"));
+                    }
+                });
+        log("hooked " + key + " overloads=" + unhooks.size());
+    }
+
+    private static void hookLocationReportPipeline(ClassLoader loader) {
+        for (String className : new String[]{
+                "com.google.android.gms.findmydevice.spot.locationreporting."
+                        + "LocationAssigningIntentOperation",
+                "com.google.android.gms.findmydevice.spot.locationreporting."
+                        + "LocationReportingServiceIntentOperation",
+                "com.google.android.gms.findmydevice.spot.locationreporting."
+                        + "LocationReportUploadIntentOperation"}) {
+            hookIntentOperation(loader, className);
+        }
+        hookPipelineMethod(loader, "ccdj", "c", "sighting received");
+        hookPipelineMethod(loader, "ccdj", "h", "sighting aggregation");
+        hookPipelineMethod(loader, "cbth", "d", "upload scheduling");
+    }
+
+    /**
+     * GMS explicitly binds the FMDN upload socket to the physical Wi-Fi
+     * network. That produces fwmark 0x66 and bypasses Android's per-UID VPN
+     * rule even though the GMS UID is included in the VPN. During the narrow
+     * cloud-upload window, leave sockets unbound so normal routing selects the
+     * VPN when one exists (or the ordinary default network when it does not).
+     */
+    private static void hookCloudUploadNetworkBinding() {
+        String key = Network.class.getName() + "#bindSocket:fmdnUploadRouting";
+        if (!HOOKED.add(key)) {
+            return;
+        }
+        Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                Network.class,
+                "bindSocket",
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (SystemClock.elapsedRealtime() > CLOUD_UPLOAD_ACTIVE_UNTIL) {
+                            return;
+                        }
+                        log("prevented physical-network socket binding during FMDN upload"
+                                + " network=" + safe(param.thisObject));
+                        param.setResult(null);
+                    }
+                });
+        log("hooked " + key + " overloads=" + unhooks.size());
+    }
+
+    /**
+     * On this HyperOS build the scheduled GMS task is accepted but never
+     * invokes LocationReportUploadIntentOperation. Reuse Google's existing
+     * fast-executor path so the same encrypted batch is uploaded after the
+     * configured short delay.
+     */
+    private static void hookOwnerSightingFastUpload(ClassLoader loader) {
+        Class<?> scheduler = XposedHelpers.findClassIfExists("cbth", loader);
+        if (scheduler == null) {
+            log("cbth upload scheduler not found for fast-path workaround");
+            return;
+        }
+        String key = scheduler.getName() + "#d:fastUploadWorkaround";
+        if (!HOOKED.add(key)) {
+            return;
+        }
+        Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                scheduler,
+                "d",
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (param.args == null
+                                || param.args.length < 2
+                                || !(param.args[1] instanceof Boolean)
+                                || (Boolean) param.args[1]) {
+                            return;
+                        }
+                        param.args[1] = true;
+                        log("enabled fast-executor upload for owner sighting");
+                    }
+                });
+        log("hooked " + key + " overloads=" + unhooks.size());
+    }
+
+    private static void hookUploadSchedulerParameters(ClassLoader loader) {
+        Class<?> locationFlags = XposedHelpers.findClassIfExists("jwch", loader);
+        if (locationFlags == null) {
+            log("jwch location-report flags not found");
+        } else {
+            hookUploadDelayForTest(locationFlags);
+            hookScalarResult(locationFlags, "p", "fast executor upload delay seconds");
+        }
+
+        Class<?> behaviorFlags = XposedHelpers.findClassIfExists("jwbw", loader);
+        if (behaviorFlags == null) {
+            log("jwbw location-report behavior flags not found");
+        } else {
+            hookScalarResult(behaviorFlags, "h", "recent crowdsourced sighting policy");
+            hookScalarResult(behaviorFlags, "f", "validated network policy");
+        }
+    }
+
+    /**
+     * Temporary diagnostic override. Nearby owner sightings arrive more often
+     * than the stock 300 second task delay, so repeatedly replacing the same
+     * task may starve it indefinitely. Thirty seconds is short enough to prove
+     * whether the upload operation itself is healthy.
+     */
+    private static void hookUploadDelayForTest(Class<?> locationFlags) {
+        String key = locationFlags.getName() + "#r:thirtySecondDiagnostic";
+        if (!HOOKED.add(key)) {
+            return;
+        }
+        Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                locationFlags,
+                "r",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (param.hasThrowable() || !(param.getResult() instanceof Number)) {
+                            return;
+                        }
+                        long original = ((Number) param.getResult()).longValue();
+                        param.setResult(30L);
+                        log("scheduler flag GMS task upload delay seconds original="
+                                + original + " effective=30 diagnostic");
+                    }
+                });
+        log("hooked " + key + " overloads=" + unhooks.size());
+    }
+
+    private static void hookScalarResult(
+            Class<?> clazz, String methodName, String label) {
+        String key = clazz.getName() + "#" + methodName + ":scalarDiagnostic";
+        if (!HOOKED.add(key)) {
+            return;
+        }
+        Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                clazz,
+                methodName,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (!param.hasThrowable()) {
+                            log("scheduler flag " + label + "=" + safe(param.getResult()));
+                        }
+                    }
+                });
+        log("hooked " + key + " overloads=" + unhooks.size());
+    }
+
+    private static void hookIntentOperation(ClassLoader loader, String className) {
+        Class<?> operation = XposedHelpers.findClassIfExists(className, loader);
+        if (operation == null) {
+            log(className + " not found");
+            return;
+        }
+        String key = operation.getName() + "#onHandleIntent:diagnostic";
+        if (!HOOKED.add(key)) {
+            return;
+        }
+        Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                operation,
+                "onHandleIntent",
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if ("LocationReportUploadIntentOperation"
+                                .equals(operation.getSimpleName())) {
+                            CLOUD_UPLOAD_ACTIVE_UNTIL =
+                                    SystemClock.elapsedRealtime() + 120_000L;
+                            log("FMDN cloud upload routing window opened");
+                        }
+                        log("pipeline enter " + operation.getSimpleName()
+                                + " action=" + findIntentAction(param.args));
+                    }
+
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        log("pipeline exit " + operation.getSimpleName()
+                                + (param.hasThrowable()
+                                ? " throwable=" + param.getThrowable() : " ok"));
+                    }
+                });
+        log("hooked " + key + " overloads=" + unhooks.size());
+    }
+
+    private static void hookPipelineMethod(
+            ClassLoader loader, String className, String methodName, String label) {
+        Class<?> clazz = XposedHelpers.findClassIfExists(className, loader);
+        if (clazz == null) {
+            log(className + " " + label + " class not found");
+            return;
+        }
+        String key = clazz.getName() + "#" + methodName + ":pipelineDiagnostic";
+        if (!HOOKED.add(key)) {
+            return;
+        }
+        Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                clazz,
+                methodName,
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        StringBuilder out = new StringBuilder("pipeline ")
+                                .append(label)
+                                .append(" args=");
+                        if (param.args == null) {
+                            out.append("null");
+                        } else {
+                            out.append('[');
+                            for (int i = 0; i < param.args.length; i++) {
+                                if (i > 0) {
+                                    out.append(", ");
+                                }
+                                Object arg = param.args[i];
+                                if (arg instanceof Collection) {
+                                    out.append(arg.getClass().getSimpleName())
+                                            .append("(size=")
+                                            .append(((Collection<?>) arg).size())
+                                            .append(')');
+                                } else if (arg instanceof Boolean
+                                        || arg instanceof Number
+                                        || arg == null) {
+                                    out.append(safe(arg));
+                                } else {
+                                    out.append(arg.getClass().getSimpleName());
+                                }
+                            }
+                            out.append(']');
+                        }
+                        log(out.toString());
+                    }
+
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (param.hasThrowable()) {
+                            log("pipeline " + label + " throwable=" + param.getThrowable());
+                        }
+                    }
+                });
+        log("hooked " + key + " overloads=" + unhooks.size());
     }
 
     /**
@@ -421,6 +768,98 @@ public final class FastPairHook implements IXposedHookLoadPackage {
             }
         }
         return out.append('}').toString();
+    }
+
+    private static String findIntentAction(Object[] args) {
+        if (args == null) {
+            return "null";
+        }
+        for (Object arg : args) {
+            if (arg instanceof Intent) {
+                return safe(((Intent) arg).getAction());
+            }
+        }
+        return "none";
+    }
+
+    private static String describePrimitiveFields(Object value) {
+        if (value == null) {
+            return "null";
+        }
+        StringBuilder out = new StringBuilder(value.getClass().getSimpleName()).append('{');
+        int written = 0;
+        for (Field field : value.getClass().getDeclaredFields()) {
+            if (Modifier.isStatic(field.getModifiers())) {
+                continue;
+            }
+            Class<?> type = field.getType();
+            try {
+                field.setAccessible(true);
+                Object fieldValue = field.get(value);
+                if (type.isPrimitive() || fieldValue == null) {
+                    if (written++ > 0) {
+                        out.append(", ");
+                    }
+                    out.append(field.getName()).append('=').append(safe(fieldValue));
+                } else if ("com.google.android.gms.findmydevice.spot.FindMyDeviceNetworkSettings"
+                        .equals(type.getName())) {
+                    if (written++ > 0) {
+                        out.append(", ");
+                    }
+                    out.append(field.getName())
+                            .append('=')
+                            .append(describePrimitiveFields(fieldValue));
+                }
+            } catch (Throwable ignored) {
+                // Diagnostics must never break GMS if a field becomes inaccessible.
+            }
+        }
+        return out.append('}').toString();
+    }
+
+    private static String describeNamedFields(Object value, String... names) {
+        if (value == null) {
+            return "null";
+        }
+        StringBuilder out = new StringBuilder("{");
+        int written = 0;
+        for (String name : names) {
+            try {
+                Field field = value.getClass().getDeclaredField(name);
+                field.setAccessible(true);
+                Object fieldValue = field.get(value);
+                if (written++ > 0) {
+                    out.append(", ");
+                }
+                out.append(name).append('=');
+                if (fieldValue == null
+                        || field.getType().isPrimitive()
+                        || fieldValue instanceof Number
+                        || fieldValue instanceof Boolean) {
+                    out.append(safe(fieldValue));
+                } else {
+                    out.append(fieldValue.getClass().getSimpleName());
+                }
+            } catch (Throwable ignored) {
+                // Obfuscation may change individual field names.
+            }
+        }
+        return out.append('}').toString();
+    }
+
+    private static String describeNamedNestedField(
+            Object value, String outerName, String innerName) {
+        if (value == null) {
+            return "null";
+        }
+        try {
+            Field outer = value.getClass().getDeclaredField(outerName);
+            outer.setAccessible(true);
+            Object nested = outer.get(value);
+            return describeNamedFields(nested, innerName);
+        } catch (Throwable ignored) {
+            return "{}";
+        }
     }
 
     private static String signature(Method method) {
