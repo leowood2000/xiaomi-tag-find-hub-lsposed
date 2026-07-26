@@ -57,6 +57,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         hookSpotClientActions(lpparam.classLoader);
         hookLocationReportDiagnostics(lpparam.classLoader);
         hookLocationUploadScheduling(lpparam.classLoader);
+        hookOwnerUploadResponse(lpparam.classLoader);
         hookSpotFastPairServerFlag(lpparam.classLoader);
         hookSelfLocationReportingFlag(lpparam.classLoader);
         hookFastPairSpotIntegrationFlag(lpparam.classLoader);
@@ -64,6 +65,162 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         hookLocatorTagEligibility(lpparam.classLoader);
         hookEligibilityPredicates(lpparam.classLoader);
         hookInitialPairingObserver(lpparam.classLoader);
+    }
+
+    private static void hookOwnerUploadResponse(ClassLoader loader) {
+        Class<?> operation = XposedHelpers.findClassIfExists(
+                "com.google.android.gms.findmydevice.spot.locationreporting."
+                        + "LocationReportUploadIntentOperation",
+                loader);
+        if (operation != null) {
+            String batchKey = operation.getName() + "#a:ownerBatchDiagnostic";
+            if (HOOKED.add(batchKey)) {
+                Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                        operation,
+                        "a",
+                        new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                if (param.args == null
+                                        || param.args.length != 2
+                                        || param.args[0] == null
+                                        || !"isct".equals(param.args[0].getClass().getName())) {
+                                    return;
+                                }
+                                Object batch = param.args[0];
+                                log("owner upload batch sightings="
+                                        + fieldCollectionSize(batch, "c")
+                                        + " metadata=" + describeUnionField(batch, "d")
+                                        + " accountCandidates="
+                                        + collectionSize(param.args[1]));
+                            }
+                        });
+                log("hooked " + batchKey + " overloads=" + unhooks.size());
+            }
+
+            String metricsKey = operation.getName() + "#d:ownerUploadMetrics";
+            if (HOOKED.add(metricsKey)) {
+                Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                        operation,
+                        "d",
+                        new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                if (param.args == null || param.args.length != 4) {
+                                    return;
+                                }
+                                log("owner upload metrics type=" + safe(param.args[0])
+                                        + " trigger=" + safe(param.args[1])
+                                        + " result=" + safe(param.args[2])
+                                        + " attempted=" + safe(param.args[3]));
+                            }
+                        });
+                log("hooked " + metricsKey + " overloads=" + unhooks.size());
+            }
+        }
+
+        Class<?> successMapper = XposedHelpers.findClassIfExists("cbsu", loader);
+        if (successMapper != null) {
+            String key = successMapper.getName() + "#apply:ownerUploadResponse";
+            if (HOOKED.add(key)) {
+                Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                        successMapper,
+                        "apply",
+                        new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                if (param.args == null
+                                        || param.args.length != 1
+                                        || param.args[0] == null
+                                        || !"isep".equals(param.args[0].getClass().getName())) {
+                                    return;
+                                }
+                                log("UploadOwnerScans response "
+                                        + describeAcknowledgements(param.args[0]));
+                            }
+                        });
+                log("hooked " + key + " overloads=" + unhooks.size());
+            }
+        }
+
+        Class<?> failureMapper = XposedHelpers.findClassIfExists("cbsp", loader);
+        if (failureMapper != null) {
+            String key = failureMapper.getName() + "#a:ownerUploadFailure";
+            if (HOOKED.add(key)) {
+                Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                        failureMapper,
+                        "a",
+                        new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                if (param.args != null
+                                        && param.args.length == 1
+                                        && param.args[0] instanceof Throwable) {
+                                    log("UploadOwnerScans failure=" + param.args[0]);
+                                }
+                            }
+                        });
+                log("hooked " + key + " overloads=" + unhooks.size());
+            }
+        }
+    }
+
+    private static String describeAcknowledgements(Object response) {
+        Object groups = readField(response, "b");
+        if (!(groups instanceof Collection)) {
+            return "groups=unavailable";
+        }
+        StringBuilder out = new StringBuilder("groups=")
+                .append(((Collection<?>) groups).size())
+                .append(" [");
+        int index = 0;
+        for (Object group : (Collection<?>) groups) {
+            if (index > 0) {
+                out.append(", ");
+            }
+            out.append("acknowledged=")
+                    .append(fieldCollectionSize(group, "b"))
+                    .append(" status=")
+                    .append(safe(readField(group, "c")));
+            if (++index >= 8) {
+                break;
+            }
+        }
+        return out.append(']').toString();
+    }
+
+    private static String describeUnionField(Object owner, String fieldName) {
+        Object union = readField(owner, fieldName);
+        if (union == null) {
+            return "null";
+        }
+        return union.getClass().getSimpleName()
+                + "(type=" + safe(readField(union, "b"))
+                + ", valueClass="
+                + (readField(union, "c") == null
+                ? "null" : readField(union, "c").getClass().getSimpleName())
+                + ")";
+    }
+
+    private static int fieldCollectionSize(Object owner, String fieldName) {
+        return collectionSize(readField(owner, fieldName));
+    }
+
+    private static int collectionSize(Object value) {
+        return value instanceof Collection ? ((Collection<?>) value).size() : -1;
+    }
+
+    private static Object readField(Object owner, String fieldName) {
+        if (owner == null) {
+            return null;
+        }
+        try {
+            Field field = owner.getClass().getDeclaredField(fieldName);
+            field.setAccessible(true);
+            return field.get(owner);
+        } catch (Throwable error) {
+            return null;
+        }
     }
 
     private static void hookLocationUploadScheduling(ClassLoader loader) {
