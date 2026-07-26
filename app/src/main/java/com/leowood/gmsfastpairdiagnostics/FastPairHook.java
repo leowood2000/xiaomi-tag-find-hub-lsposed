@@ -58,6 +58,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
     private static volatile boolean SINGAPORE_TELEPHONY_LOGGED;
     private static volatile boolean SINGAPORE_LOCALE_LOGGED;
     private static volatile boolean SINGAPORE_PROPERTY_LOGGED;
+    private static volatile boolean DISCOVERY_ELIGIBILITY_LOGGED;
     private static volatile boolean PHASE_B_STARTED;
 
     @Override
@@ -73,6 +74,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
 
         log("loaded process=" + lpparam.processName);
         hookSingaporeEligibilityEnvironment(lpparam.classLoader);
+        hookNearbyDiscoveryEligibility(lpparam.classLoader);
         keepHalfSheetComponentEnabled();
         hookSpotFastPairServerFlag(lpparam.classLoader);
         hookSelfLocationReportingFlag(lpparam.classLoader);
@@ -179,6 +181,50 @@ public final class FastPairHook implements IXposedHookLoadPackage {
             }
         }
         log("phase B Singapore eligibility window started duration=600s");
+    }
+
+    /**
+     * Nearby Discovery has its own device/region eligibility gate in addition
+     * to the SPOT flags. If this remains false, ModuleInitializer disables the
+     * Fast Pair components and DiscoveryService never registers its FE2C scan.
+     */
+    private static void hookNearbyDiscoveryEligibility(ClassLoader loader) {
+        Class<?> eligibility = XposedHelpers.findClassIfExists("ixlm", loader);
+        if (eligibility == null) {
+            log("ixlm Nearby Discovery eligibility helper not found");
+            return;
+        }
+
+        for (String methodName : new String[]{"d", "e"}) {
+            String key = eligibility.getName() + "#" + methodName
+                    + ":nearbyDiscoveryEligibility";
+            if (!HOOKED.add(key)) {
+                continue;
+            }
+            Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                    eligibility,
+                    methodName,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            if (!singaporeEligibilityActive()
+                                    || param.hasThrowable()
+                                    || !(param.getResult() instanceof Boolean)) {
+                                return;
+                            }
+                            boolean original = (Boolean) param.getResult();
+                            if (!original) {
+                                param.setResult(true);
+                                if (!DISCOVERY_ELIGIBILITY_LOGGED) {
+                                    DISCOVERY_ELIGIBILITY_LOGGED = true;
+                                    log("phase C Nearby Discovery eligibility original=false"
+                                            + " effective=true");
+                                }
+                            }
+                        }
+                    });
+            log("hooked " + key + " overloads=" + unhooks.size());
+        }
     }
 
     private static void hookCountryMethod(Class<?> type, String methodName) {
