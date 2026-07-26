@@ -10,7 +10,9 @@ import android.content.pm.PackageManager;
 import android.location.Location;
 import android.net.Network;
 import android.os.Bundle;
+import android.os.LocaleList;
 import android.os.SystemClock;
+import android.telephony.TelephonyManager;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -18,6 +20,7 @@ import java.lang.reflect.Modifier;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -49,6 +52,10 @@ public final class FastPairHook implements IXposedHookLoadPackage {
             Pattern.compile("(?i)([0-9a-f]{2}:){5}[0-9a-f]{2}");
     private static final Set<String> HOOKED = new HashSet<>();
     private static volatile long CLOUD_UPLOAD_ACTIVE_UNTIL;
+    private static volatile long SINGAPORE_ELIGIBILITY_ACTIVE_UNTIL;
+    private static volatile boolean SINGAPORE_TELEPHONY_LOGGED;
+    private static volatile boolean SINGAPORE_LOCALE_LOGGED;
+    private static volatile boolean SINGAPORE_PROPERTY_LOGGED;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -62,6 +69,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         }
 
         log("loaded process=" + lpparam.processName);
+        hookSingaporeEligibilityEnvironment(lpparam.classLoader);
         keepHalfSheetComponentEnabled();
         hookSpotFastPairServerFlag(lpparam.classLoader);
         hookSelfLocationReportingFlag(lpparam.classLoader);
@@ -82,6 +90,135 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         if ("com.google.android.gms".equals(lpparam.processName)) {
             scheduleForcedDeviceSync(lpparam.classLoader);
         }
+    }
+
+    /**
+     * Phase-A diagnostic: present a Singapore eligibility environment only
+     * inside GMS for ten minutes after each GMS process starts. No system
+     * setting, SIM configuration or physical location is changed.
+     */
+    private static void hookSingaporeEligibilityEnvironment(ClassLoader loader) {
+        SINGAPORE_ELIGIBILITY_ACTIVE_UNTIL =
+                SystemClock.elapsedRealtime() + 10L * 60L * 1000L;
+        hookCountryMethod(TelephonyManager.class, "getSimCountryIso");
+        hookCountryMethod(TelephonyManager.class, "getNetworkCountryIso");
+
+        String localeKey = Locale.class.getName() + "#getDefault:singaporeDiagnostic";
+        if (HOOKED.add(localeKey)) {
+            XposedBridge.hookAllMethods(
+                    Locale.class,
+                    "getDefault",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            if (!singaporeEligibilityActive()
+                                    || param.args == null
+                                    || param.args.length != 0) {
+                                return;
+                            }
+                            param.setResult(Locale.forLanguageTag("en-SG"));
+                            if (!SINGAPORE_LOCALE_LOGGED) {
+                                SINGAPORE_LOCALE_LOGGED = true;
+                                log("phase A locale effective=en-SG");
+                            }
+                        }
+                    });
+        }
+
+        String localeListKey =
+                LocaleList.class.getName() + "#getDefault:singaporeDiagnostic";
+        if (HOOKED.add(localeListKey)) {
+            XposedBridge.hookAllMethods(
+                    LocaleList.class,
+                    "getDefault",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            if (singaporeEligibilityActive()) {
+                                param.setResult(new LocaleList(
+                                        Locale.forLanguageTag("en-SG")));
+                            }
+                        }
+                    });
+        }
+
+        Class<?> systemProperties =
+                XposedHelpers.findClassIfExists("android.os.SystemProperties", loader);
+        if (systemProperties != null) {
+            String propertyKey =
+                    systemProperties.getName() + "#get:singaporeDiagnostic";
+            if (HOOKED.add(propertyKey)) {
+                XposedBridge.hookAllMethods(
+                        systemProperties,
+                        "get",
+                        new XC_MethodHook() {
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) {
+                                if (!singaporeEligibilityActive()
+                                        || param.args == null
+                                        || param.args.length == 0
+                                        || !(param.args[0] instanceof String)) {
+                                    return;
+                                }
+                                String key = (String) param.args[0];
+                                String replacement = singaporePropertyValue(key);
+                                if (replacement == null) {
+                                    return;
+                                }
+                                param.setResult(replacement);
+                                if (!SINGAPORE_PROPERTY_LOGGED) {
+                                    SINGAPORE_PROPERTY_LOGGED = true;
+                                    log("phase A region property " + key
+                                            + " effective=" + replacement);
+                                }
+                            }
+                        });
+            }
+        }
+        log("phase A Singapore eligibility window started duration=600s");
+    }
+
+    private static void hookCountryMethod(Class<?> type, String methodName) {
+        String key = type.getName() + "#" + methodName + ":singaporeDiagnostic";
+        if (!HOOKED.add(key)) {
+            return;
+        }
+        XposedBridge.hookAllMethods(
+                type,
+                methodName,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (!singaporeEligibilityActive()) {
+                            return;
+                        }
+                        param.setResult("sg");
+                        if (!SINGAPORE_TELEPHONY_LOGGED) {
+                            SINGAPORE_TELEPHONY_LOGGED = true;
+                            log("phase A telephony country effective=sg");
+                        }
+                    }
+                });
+    }
+
+    private static boolean singaporeEligibilityActive() {
+        return SystemClock.elapsedRealtime() <= SINGAPORE_ELIGIBILITY_ACTIVE_UNTIL;
+    }
+
+    private static String singaporePropertyValue(String key) {
+        if ("ro.miui.region".equals(key)
+                || "persist.sys.miui_region".equals(key)
+                || "ro.product.locale.region".equals(key)) {
+            return "SG";
+        }
+        if ("ro.product.locale".equals(key)) {
+            return "en-SG";
+        }
+        if ("gsm.sim.operator.iso-country".equals(key)
+                || "gsm.operator.iso-country".equals(key)) {
+            return "sg";
+        }
+        return null;
     }
 
     /**
