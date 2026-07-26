@@ -56,6 +56,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         keepHalfSheetComponentEnabled();
         hookSpotClientActions(lpparam.classLoader);
         hookLocationReportDiagnostics(lpparam.classLoader);
+        hookLocationUploadScheduling(lpparam.classLoader);
         hookSpotFastPairServerFlag(lpparam.classLoader);
         hookSelfLocationReportingFlag(lpparam.classLoader);
         hookFastPairSpotIntegrationFlag(lpparam.classLoader);
@@ -63,6 +64,89 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         hookLocatorTagEligibility(lpparam.classLoader);
         hookEligibilityPredicates(lpparam.classLoader);
         hookInitialPairingObserver(lpparam.classLoader);
+    }
+
+    private static void hookLocationUploadScheduling(ClassLoader loader) {
+        hookPositiveLongFlag(
+                loader,
+                "jwch",
+                "r",
+                300L,
+                "location_report_gms_task_min_batch_collection_period_secs");
+        hookPositiveLongFlag(
+                loader,
+                "jwch",
+                "p",
+                15L,
+                "location_report_fast_batch_collection_period_secs");
+
+        Class<?> scheduler = XposedHelpers.findClassIfExists("cbth", loader);
+        if (scheduler == null) {
+            log("cbth not found for location upload scheduling test");
+            return;
+        }
+        String key = scheduler.getName() + "#d:fastLocationUploadTest";
+        if (!HOOKED.add(key)) {
+            return;
+        }
+        Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                scheduler,
+                "d",
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (param.args == null
+                                || param.args.length != 2
+                                || !(param.args[0] instanceof Boolean)
+                                || !(param.args[1] instanceof Boolean)) {
+                            return;
+                        }
+                        boolean originalReset = (Boolean) param.args[0];
+                        boolean originalFast = (Boolean) param.args[1];
+                        param.args[0] = true;
+                        param.args[1] = true;
+                        log("location upload scheduling originalReset=" + originalReset
+                                + " originalFast=" + originalFast
+                                + " effectiveReset=true effectiveFast=true");
+                    }
+                });
+        log("hooked " + key + " overloads=" + unhooks.size());
+    }
+
+    private static void hookPositiveLongFlag(
+            ClassLoader loader,
+            String className,
+            String methodName,
+            long fallback,
+            String label) {
+        Class<?> type = XposedHelpers.findClassIfExists(className, loader);
+        if (type == null) {
+            log(className + " not found for " + label);
+            return;
+        }
+        String key = type.getName() + "#" + methodName + ":" + label;
+        if (!HOOKED.add(key)) {
+            return;
+        }
+        Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                type,
+                methodName,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (param.hasThrowable() || !(param.getResult() instanceof Number)) {
+                            return;
+                        }
+                        long original = ((Number) param.getResult()).longValue();
+                        long effective = original > 0 ? original : fallback;
+                        if (effective != original) {
+                            param.setResult(effective);
+                        }
+                        log("SPOT flag " + label + " original=" + original
+                                + " effective=" + effective);
+                    }
+                });
+        log("hooked " + key + " overloads=" + unhooks.size());
     }
 
     private static void hookLocationReportDiagnostics(ClassLoader loader) {
