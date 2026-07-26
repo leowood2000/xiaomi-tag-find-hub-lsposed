@@ -22,6 +22,8 @@ import java.util.Collection;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
@@ -56,6 +58,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
     private static volatile boolean SINGAPORE_TELEPHONY_LOGGED;
     private static volatile boolean SINGAPORE_LOCALE_LOGGED;
     private static volatile boolean SINGAPORE_PROPERTY_LOGGED;
+    private static volatile boolean PHASE_B_STARTED;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -93,7 +96,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
     }
 
     /**
-     * Phase-A diagnostic: present a Singapore eligibility environment only
+     * Phase-B diagnostic: present a Singapore eligibility environment only
      * inside GMS for ten minutes after each GMS process starts. No system
      * setting, SIM configuration or physical location is changed.
      */
@@ -119,7 +122,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                             param.setResult(Locale.forLanguageTag("en-SG"));
                             if (!SINGAPORE_LOCALE_LOGGED) {
                                 SINGAPORE_LOCALE_LOGGED = true;
-                                log("phase A locale effective=en-SG");
+                                log("phase B locale effective=en-SG");
                             }
                         }
                     });
@@ -168,14 +171,14 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                                 param.setResult(replacement);
                                 if (!SINGAPORE_PROPERTY_LOGGED) {
                                     SINGAPORE_PROPERTY_LOGGED = true;
-                                    log("phase A region property " + key
+                                    log("phase B region property " + key
                                             + " effective=" + replacement);
                                 }
                             }
                         });
             }
         }
-        log("phase A Singapore eligibility window started duration=600s");
+        log("phase B Singapore eligibility window started duration=600s");
     }
 
     private static void hookCountryMethod(Class<?> type, String methodName) {
@@ -195,7 +198,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                         param.setResult("sg");
                         if (!SINGAPORE_TELEPHONY_LOGGED) {
                             SINGAPORE_TELEPHONY_LOGGED = true;
-                            log("phase A telephony country effective=sg");
+                            log("phase B telephony country effective=sg");
                         }
                     }
                 });
@@ -250,6 +253,11 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                                         Thread.sleep(5000L);
                                         Account[] accounts = AccountManager.get(application)
                                                 .getAccountsByType("com.google");
+                                        if (!runPhaseBSelfReregistration(
+                                                loader, application)) {
+                                            log("phase B stopped before device sync");
+                                            return;
+                                        }
                                         Class<?> schedulerClass =
                                                 XposedHelpers.findClass("dekn", loader);
                                         Object scheduler = XposedHelpers.callStaticMethod(
@@ -264,7 +272,6 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                                             runDeviceSyncDirectly(
                                                     loader, application, account);
                                         }
-                                        runSelfRegistrationSync(loader, application);
                                     } catch (Throwable throwable) {
                                         log("forced device sync scheduling failed="
                                                 + throwable.getClass().getSimpleName()
@@ -275,6 +282,65 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                     }
                 });
         log("hooked " + key);
+    }
+
+    /**
+     * Explicitly authorized Phase B. Delete only this Android's current SPOT
+     * self-device mapping, wait for that operation to finish, then run Google's
+     * normal unthrottled self-registration and owner-key synchronization while
+     * the Singapore eligibility environment is active.
+     */
+    private static synchronized boolean runPhaseBSelfReregistration(
+            ClassLoader loader, Application application) {
+        if (PHASE_B_STARTED) {
+            return false;
+        }
+        PHASE_B_STARTED = true;
+        boolean unprovisioned = false;
+        try {
+            Class<?> serviceClass = XposedHelpers.findClass(
+                    "com.google.android.gms.findmydevice.spot.sync."
+                            + "SelfReportingRegistrationAndOwnerKeySyncService",
+                    loader);
+            Object service = XposedHelpers.newInstance(serviceClass);
+            XposedHelpers.callMethod(service, "setModuleContext", application);
+
+            Object syncer = XposedHelpers.getObjectField(service, "l");
+            Object provisioner = XposedHelpers.getObjectField(syncer, "b");
+            Object stateStore = XposedHelpers.getObjectField(provisioner, "e");
+            Future<?> stateFuture = (Future<?>) XposedHelpers.callMethod(
+                    stateStore, "e");
+            Object state = stateFuture.get(45L, TimeUnit.SECONDS);
+            log("phase B baseline self state="
+                    + describeNamedFields(state, "b", "c", "g")
+                    + " nestedK=" + describeNamedNestedField(state, "k", "b"));
+
+            Future<?> unprovisionFuture = (Future<?>) XposedHelpers.callMethod(
+                    provisioner, "q", state);
+            unprovisionFuture.get(90L, TimeUnit.SECONDS);
+            unprovisioned = true;
+            log("phase B self-unprovision completed");
+
+            Bundle extras = new Bundle();
+            extras.putBoolean("throttle", false);
+            Class<?> taskClass = XposedHelpers.findClass("demp", loader);
+            Object task = XposedHelpers.newInstance(
+                    taskClass, "diag_phase_b_self_reregistration", extras);
+            Future<?> registrationFuture = (Future<?>) XposedHelpers.callMethod(
+                    service, "d", task);
+            Object result = registrationFuture.get(120L, TimeUnit.SECONDS);
+            log("phase B self-registration completed result=" + safe(result));
+            return true;
+        } catch (Throwable throwable) {
+            log("phase B self re-registration failed="
+                    + throwable.getClass().getSimpleName()
+                    + ": " + safe(throwable.getMessage()));
+            if (unprovisioned) {
+                log("phase B recovery: retrying official self-registration");
+                runSelfRegistrationSync(loader, application);
+            }
+            return false;
+        }
     }
 
     /**
