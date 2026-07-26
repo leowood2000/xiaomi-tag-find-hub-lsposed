@@ -1,5 +1,9 @@
 package com.leowood.gmsfastpairdiagnostics;
 
+import android.accounts.Account;
+import android.accounts.AccountManager;
+import android.app.Application;
+import android.app.Instrumentation;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -69,10 +73,105 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         hookCloudUploadNetworkBinding();
         hookLocationReportPipeline(lpparam.classLoader);
         hookOwnerUploadResult(lpparam.classLoader);
+        hookOwnedDeviceSyncResult(lpparam.classLoader);
         hookFinalDecision(lpparam.classLoader);
         hookLocatorTagEligibility(lpparam.classLoader);
         hookEligibilityPredicates(lpparam.classLoader);
         hookInitialPairingObserver(lpparam.classLoader);
+        if ("com.google.android.gms".equals(lpparam.processName)) {
+            scheduleForcedDeviceSync(lpparam.classLoader);
+        }
+    }
+
+    /**
+     * Diagnostic only: ask GMS's own scheduler to run the same forced device
+     * sync used by its internal one-off task. This does not synthesize devices;
+     * it only refreshes the server-owned device/EID cache for each Google
+     * account already present on the phone.
+     */
+    private static void scheduleForcedDeviceSync(final ClassLoader loader) {
+        String key = "Instrumentation#callApplicationOnCreate:forceDeviceSync";
+        if (!HOOKED.add(key)) {
+            return;
+        }
+        XposedBridge.hookAllMethods(
+                Instrumentation.class,
+                "callApplicationOnCreate",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (param.args == null
+                                || param.args.length == 0
+                                || !(param.args[0] instanceof Application)) {
+                            return;
+                        }
+                        final Application application = (Application) param.args[0];
+                        new Thread(
+                                () -> {
+                                    try {
+                                        Thread.sleep(5000L);
+                                        Account[] accounts = AccountManager.get(application)
+                                                .getAccountsByType("com.google");
+                                        Class<?> schedulerClass =
+                                                XposedHelpers.findClass("dekn", loader);
+                                        Object scheduler = XposedHelpers.callStaticMethod(
+                                                schedulerClass, "a", application);
+                                        Class<?> schedulingUtil =
+                                                XposedHelpers.findClass("ccmj", loader);
+                                        for (Account account : accounts) {
+                                            XposedHelpers.callStaticMethod(
+                                                    schedulingUtil, "j", scheduler, account);
+                                            log("scheduled forced device sync account="
+                                                    + account.name);
+                                        }
+                                    } catch (Throwable throwable) {
+                                        log("forced device sync scheduling failed="
+                                                + throwable.getClass().getSimpleName()
+                                                + ": " + safe(throwable.getMessage()));
+                                    }
+                                },
+                                "FmdnForceDeviceSync").start();
+                    }
+                });
+        log("hooked " + key);
+    }
+
+    /**
+     * ccko is the first continuation that receives GetOwnedDevicesResponse.
+     * Record list sizes only, avoiding identifiers and key material.
+     */
+    private static void hookOwnedDeviceSyncResult(ClassLoader loader) {
+        Class<?> continuation = XposedHelpers.findClassIfExists("ccko", loader);
+        if (continuation == null) {
+            log("owned-device sync continuation ccko not found");
+            return;
+        }
+        String key = continuation.getName() + "#a:ownedDeviceCounts";
+        if (!HOOKED.add(key)) {
+            return;
+        }
+        Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                continuation,
+                "a",
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (param.args == null
+                                || param.args.length == 0
+                                || param.args[0] == null
+                                || !"isbs".equals(param.args[0].getClass().getName())) {
+                            return;
+                        }
+                        Object response = param.args[0];
+                        log("owned-device sync response"
+                                + " androidDevices=" + collectionSize(readField(response, "c"))
+                                + " accessories=" + collectionSize(readField(response, "d"))
+                                + " otherDevices=" + collectionSize(readField(response, "e"))
+                                + " keyData=" + collectionSize(readField(response, "g"))
+                                + " deviceTypes=" + collectionSize(readField(response, "h")));
+                    }
+                });
+        log("hooked " + key + " overloads=" + unhooks.size());
     }
 
     /**
