@@ -192,11 +192,16 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                         }
                         Object response = param.args[0];
                         log("owned-device sync response"
-                                + " androidDevices=" + collectionSize(readField(response, "c"))
-                                + " accessories=" + collectionSize(readField(response, "d"))
+                                + " computedEidDevices="
+                                + collectionSize(readField(response, "c"))
+                                + " precomputedEidDevices="
+                                + collectionSize(readField(response, "d"))
                                 + " otherDevices=" + collectionSize(readField(response, "e"))
                                 + " keyData=" + collectionSize(readField(response, "g"))
-                                + " deviceTypes=" + collectionSize(readField(response, "h")));
+                                + " deviceTypeCodes="
+                                + collectionValues(readField(response, "h"))
+                                + " computedBeaconTypes="
+                                + collectionFieldValues(readField(response, "c"), "l"));
                     }
                 });
         log("hooked " + key + " overloads=" + unhooks.size());
@@ -1145,6 +1150,28 @@ public final class FastPairHook implements IXposedHookLoadPackage {
 
     private static int collectionSize(Object value) {
         return value instanceof Collection ? ((Collection<?>) value).size() : -1;
+    }
+
+    private static String collectionValues(Object value) {
+        if (!(value instanceof Collection)) {
+            return "unavailable";
+        }
+        return safe(((Collection<?>) value).toString());
+    }
+
+    private static String collectionFieldValues(Object value, String fieldName) {
+        if (!(value instanceof Collection)) {
+            return "unavailable";
+        }
+        StringBuilder out = new StringBuilder("[");
+        int written = 0;
+        for (Object item : (Collection<?>) value) {
+            if (written++ > 0) {
+                out.append(',');
+            }
+            out.append(safe(readField(item, fieldName)));
+        }
+        return out.append(']').toString();
     }
 
     private static String describeOwnerBatch(Object batch) {
