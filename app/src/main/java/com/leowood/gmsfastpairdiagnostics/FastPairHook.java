@@ -9,6 +9,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.location.Location;
 import android.net.Network;
+import android.os.Bundle;
 import android.os.SystemClock;
 
 import java.lang.reflect.Field;
@@ -126,6 +127,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                                             runDeviceSyncDirectly(
                                                     loader, application, account);
                                         }
+                                        runSelfRegistrationSync(loader, application);
                                     } catch (Throwable throwable) {
                                         log("forced device sync scheduling failed="
                                                 + throwable.getClass().getSimpleName()
@@ -160,6 +162,30 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                     + " future=" + future.getClass().getSimpleName());
         } catch (Throwable throwable) {
             log("direct device sync failed=" + throwable.getClass().getSimpleName()
+                    + ": " + safe(throwable.getMessage()));
+        }
+    }
+
+    private static void runSelfRegistrationSync(
+            ClassLoader loader, Application application) {
+        try {
+            Class<?> serviceClass = XposedHelpers.findClass(
+                    "com.google.android.gms.findmydevice.spot.sync."
+                            + "SelfReportingRegistrationAndOwnerKeySyncService",
+                    loader);
+            Object service = XposedHelpers.newInstance(serviceClass);
+            XposedHelpers.callMethod(service, "setModuleContext", application);
+            Bundle extras = new Bundle();
+            extras.putBoolean("throttle", false);
+            Class<?> taskClass = XposedHelpers.findClass("demp", loader);
+            Object task = XposedHelpers.newInstance(
+                    taskClass, "diag_force_self_registration", extras);
+            Object future = XposedHelpers.callMethod(service, "d", task);
+            log("started direct self-registration sync future="
+                    + future.getClass().getSimpleName());
+        } catch (Throwable throwable) {
+            log("direct self-registration sync failed="
+                    + throwable.getClass().getSimpleName()
                     + ": " + safe(throwable.getMessage()));
         }
     }
@@ -201,7 +227,10 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                                 + " deviceTypeCodes="
                                 + collectionValues(readField(response, "h"))
                                 + " computedBeaconTypes="
-                                + collectionFieldValues(readField(response, "c"), "l"));
+                                + collectionFieldValues(readField(response, "c"), "l")
+                                + " identityHashes="
+                                + computedIdentityHashes(
+                                        loader, readField(response, "c")));
                     }
                 });
         log("hooked " + key + " overloads=" + unhooks.size());
@@ -1174,6 +1203,41 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         return out.append(']').toString();
     }
 
+    private static String computedIdentityHashes(ClassLoader loader, Object value) {
+        if (!(value instanceof Collection)) {
+            return "unavailable";
+        }
+        StringBuilder out = new StringBuilder("[");
+        int written = 0;
+        try {
+            Class<?> identityUtil = XposedHelpers.findClass("gtnm", loader);
+            for (Object item : (Collection<?>) value) {
+                if (written++ > 0) {
+                    out.append(',');
+                }
+                Object identity = XposedHelpers.callStaticMethod(
+                        identityUtil, "d", readField(item, "c"));
+                out.append(byteStringHash(identity));
+            }
+        } catch (Throwable throwable) {
+            return "error:" + throwable.getClass().getSimpleName();
+        }
+        return out.append(']').toString();
+    }
+
+    private static int byteStringHash(Object value) {
+        if (value == null) {
+            return 0;
+        }
+        try {
+            Object bytes = XposedHelpers.callMethod(value, "N");
+            return bytes instanceof byte[] ? Arrays.hashCode((byte[]) bytes) : value.hashCode();
+        } catch (Throwable ignored) {
+            Object bytes = readField(value, "a");
+            return bytes instanceof byte[] ? Arrays.hashCode((byte[]) bytes) : value.hashCode();
+        }
+    }
+
     private static String describeOwnerBatch(Object batch) {
         StringBuilder out = new StringBuilder(describeNamedFields(batch, "b", "e", "f"));
         Object groupsValue = readField(batch, "c");
@@ -1226,6 +1290,8 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                 + (payload == null ? "null" : payload.getClass().getSimpleName())
                 + ", scalars="
                 + describePrimitiveFields(payload)
+                + ("jgvt".equals(payload == null ? "" : payload.getClass().getSimpleName())
+                        ? ", byteHash=" + byteStringHash(payload) : "")
                 + "}";
     }
 
