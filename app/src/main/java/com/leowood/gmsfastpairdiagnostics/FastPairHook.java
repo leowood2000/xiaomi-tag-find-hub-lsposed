@@ -1,12 +1,14 @@
 package com.leowood.gmsfastpairdiagnostics;
 
 import android.content.ComponentName;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -53,6 +55,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         log("loaded process=" + lpparam.processName);
         keepHalfSheetComponentEnabled();
         hookSpotClientActions(lpparam.classLoader);
+        hookLocationReportDiagnostics(lpparam.classLoader);
         hookSpotFastPairServerFlag(lpparam.classLoader);
         hookSelfLocationReportingFlag(lpparam.classLoader);
         hookFastPairSpotIntegrationFlag(lpparam.classLoader);
@@ -60,6 +63,112 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         hookLocatorTagEligibility(lpparam.classLoader);
         hookEligibilityPredicates(lpparam.classLoader);
         hookInitialPairingObserver(lpparam.classLoader);
+    }
+
+    private static void hookLocationReportDiagnostics(ClassLoader loader) {
+        for (String className : new String[]{
+                "com.google.android.gms.findmydevice.spot.locationreporting."
+                        + "LocationAssigningIntentOperation",
+                "com.google.android.gms.findmydevice.spot.locationreporting."
+                        + "LocationReportingServiceIntentOperation",
+                "com.google.android.gms.findmydevice.spot.locationreporting."
+                        + "LocationReportUploadIntentOperation"}) {
+            hookIntentOperationDiagnostic(loader, className);
+        }
+        hookPipelineDiagnostic(loader, "ccdj", "c", "sighting received");
+        hookPipelineDiagnostic(loader, "ccdj", "h", "sighting aggregation");
+        hookPipelineDiagnostic(loader, "cbth", "d", "upload scheduling");
+    }
+
+    private static void hookIntentOperationDiagnostic(ClassLoader loader, String className) {
+        Class<?> operation = XposedHelpers.findClassIfExists(className, loader);
+        if (operation == null) {
+            log(className + " not found for location-report diagnostic");
+            return;
+        }
+        String key = operation.getName() + "#onHandleIntent:locationReportDiagnostic";
+        if (!HOOKED.add(key)) {
+            return;
+        }
+        Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                operation,
+                "onHandleIntent",
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        log("location pipeline enter " + operation.getSimpleName()
+                                + " action=" + findIntentAction(param.args));
+                    }
+
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        log("location pipeline exit " + operation.getSimpleName()
+                                + (param.hasThrowable()
+                                ? " throwable=" + param.getThrowable() : " ok"));
+                    }
+                });
+        log("hooked " + key + " overloads=" + unhooks.size());
+    }
+
+    private static void hookPipelineDiagnostic(
+            ClassLoader loader, String className, String methodName, String label) {
+        Class<?> type = XposedHelpers.findClassIfExists(className, loader);
+        if (type == null) {
+            log(className + " not found for " + label);
+            return;
+        }
+        String key = type.getName() + "#" + methodName + ":" + label;
+        if (!HOOKED.add(key)) {
+            return;
+        }
+        Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                type,
+                methodName,
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        StringBuilder out = new StringBuilder("location pipeline ")
+                                .append(label)
+                                .append(" args=");
+                        if (param.args == null) {
+                            out.append("null");
+                        } else {
+                            out.append('[');
+                            for (int i = 0; i < param.args.length; i++) {
+                                if (i > 0) {
+                                    out.append(", ");
+                                }
+                                Object arg = param.args[i];
+                                if (arg == null
+                                        || arg instanceof Boolean
+                                        || arg instanceof Number) {
+                                    out.append(String.valueOf(arg));
+                                } else if (arg instanceof Collection) {
+                                    out.append(arg.getClass().getSimpleName())
+                                            .append("(size=")
+                                            .append(((Collection<?>) arg).size())
+                                            .append(')');
+                                } else {
+                                    out.append(arg.getClass().getSimpleName());
+                                }
+                            }
+                            out.append(']');
+                        }
+                        log(out.toString());
+                    }
+                });
+        log("hooked " + key + " overloads=" + unhooks.size());
+    }
+
+    private static String findIntentAction(Object[] args) {
+        if (args != null) {
+            for (Object arg : args) {
+                if (arg instanceof Intent) {
+                    return ((Intent) arg).getAction();
+                }
+            }
+        }
+        return "none";
     }
 
     /**
