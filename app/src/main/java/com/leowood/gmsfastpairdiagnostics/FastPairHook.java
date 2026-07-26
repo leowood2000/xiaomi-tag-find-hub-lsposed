@@ -3,6 +3,7 @@ package com.leowood.gmsfastpairdiagnostics;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.location.Location;
 import android.net.Network;
 import android.os.SystemClock;
 
@@ -67,6 +68,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         hookOwnerSightingFastUpload(lpparam.classLoader);
         hookCloudUploadNetworkBinding();
         hookLocationReportPipeline(lpparam.classLoader);
+        hookOwnerUploadResult(lpparam.classLoader);
         hookFinalDecision(lpparam.classLoader);
         hookLocatorTagEligibility(lpparam.classLoader);
         hookEligibilityPredicates(lpparam.classLoader);
@@ -182,6 +184,110 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         hookPipelineMethod(loader, "ccdj", "c", "sighting received");
         hookPipelineMethod(loader, "ccdj", "h", "sighting aggregation");
         hookPipelineMethod(loader, "cbth", "d", "upload scheduling");
+    }
+
+    /**
+     * UploadOwnerScans can complete successfully while acknowledging no
+     * sightings. Record both the metrics status/count and the size of the
+     * server response field consumed by LocationReportUploadIntentOperation.
+     */
+    private static void hookOwnerUploadResult(ClassLoader loader) {
+        Class<?> operation = XposedHelpers.findClassIfExists(
+                "com.google.android.gms.findmydevice.spot.locationreporting."
+                        + "LocationReportUploadIntentOperation",
+                loader);
+        if (operation != null) {
+            String batchKey = operation.getName() + "#a:ownerBatchShape";
+            if (HOOKED.add(batchKey)) {
+                Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                        operation,
+                        "a",
+                        new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                if (param.args == null
+                                        || param.args.length != 2
+                                        || param.args[0] == null
+                                        || !"isct".equals(param.args[0].getClass().getName())) {
+                                    return;
+                                }
+                                log("owner upload batch=" + describeOwnerBatch(param.args[0])
+                                        + " accountCandidates="
+                                        + collectionSize(param.args[1]));
+                            }
+                        });
+                log("hooked " + batchKey + " overloads=" + unhooks.size());
+            }
+
+            String accountKey = operation.getName() + "#c:ownerUploadAccount";
+            if (HOOKED.add(accountKey)) {
+                Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                        operation,
+                        "c",
+                        new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                if (param.args != null
+                                        && param.args.length == 1
+                                        && param.args[0] instanceof android.accounts.Account) {
+                                    android.accounts.Account account =
+                                            (android.accounts.Account) param.args[0];
+                                    log("owner upload account=" + safe(account.name)
+                                            + " type=" + safe(account.type));
+                                }
+                            }
+                        });
+                log("hooked " + accountKey + " overloads=" + unhooks.size());
+            }
+
+            String metricsKey = operation.getName() + "#d:ownerUploadResult";
+            if (HOOKED.add(metricsKey)) {
+                Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                        operation,
+                        "d",
+                        new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                if (param.args == null || param.args.length != 4) {
+                                    return;
+                                }
+                                log("owner upload metrics type="
+                                        + describeNamedFields(param.args[0], "a")
+                                        + " trigger=" + safe(param.args[1])
+                                        + " result=" + describeNamedFields(param.args[2], "a")
+                                        + " attempted=" + safe(param.args[3]));
+                            }
+                        });
+                log("hooked " + metricsKey + " overloads=" + unhooks.size());
+            }
+        }
+
+        Class<?> successMapper = XposedHelpers.findClassIfExists("cbsu", loader);
+        if (successMapper == null) {
+            log("cbsu UploadOwnerScans success mapper not found");
+            return;
+        }
+        String responseKey = successMapper.getName() + "#apply:ownerUploadResponse";
+        if (!HOOKED.add(responseKey)) {
+            return;
+        }
+        Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                successMapper,
+                "apply",
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (param.args == null || param.args.length != 1) {
+                            return;
+                        }
+                        Object response = param.args[0];
+                        if (response == null || !"isep".equals(response.getClass().getName())) {
+                            return;
+                        }
+                        log("UploadOwnerScans response=" + describeCollectionField(response, "b"));
+                    }
+                });
+        log("hooked " + responseKey + " overloads=" + unhooks.size());
     }
 
     /**
@@ -380,7 +486,18 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                                     out.append(", ");
                                 }
                                 Object arg = param.args[i];
-                                if (arg instanceof Collection) {
+                                if (arg instanceof Location) {
+                                    Location location = (Location) arg;
+                                    out.append("Location(lat=")
+                                            .append(location.getLatitude())
+                                            .append(", lon=")
+                                            .append(location.getLongitude())
+                                            .append(", accuracy=")
+                                            .append(location.getAccuracy())
+                                            .append(", time=")
+                                            .append(location.getTime())
+                                            .append(')');
+                                } else if (arg instanceof Collection) {
                                     out.append(arg.getClass().getSimpleName())
                                             .append("(size=")
                                             .append(((Collection<?>) arg).size())
@@ -859,6 +976,115 @@ public final class FastPairHook implements IXposedHookLoadPackage {
             return describeNamedFields(nested, innerName);
         } catch (Throwable ignored) {
             return "{}";
+        }
+    }
+
+    private static String describeCollectionField(Object value, String fieldName) {
+        if (value == null) {
+            return "null";
+        }
+        try {
+            Field field = value.getClass().getDeclaredField(fieldName);
+            field.setAccessible(true);
+            Object fieldValue = field.get(value);
+            if (fieldValue instanceof Collection) {
+                Collection<?> collection = (Collection<?>) fieldValue;
+                return value.getClass().getSimpleName()
+                        + "{"
+                        + fieldName
+                        + ".type="
+                        + fieldValue.getClass().getSimpleName()
+                        + ", "
+                        + fieldName
+                        + ".size="
+                        + collection.size()
+                        + "}";
+            }
+            return value.getClass().getSimpleName()
+                    + "{"
+                    + fieldName
+                    + "="
+                    + safe(fieldValue)
+                    + "}";
+        } catch (Throwable throwable) {
+            return value.getClass().getSimpleName()
+                    + "{"
+                    + fieldName
+                    + ".error="
+                    + throwable.getClass().getSimpleName()
+                    + "}";
+        }
+    }
+
+    private static int collectionSize(Object value) {
+        return value instanceof Collection ? ((Collection<?>) value).size() : -1;
+    }
+
+    private static String describeOwnerBatch(Object batch) {
+        StringBuilder out = new StringBuilder(describeNamedFields(batch, "b", "e", "f"));
+        Object groupsValue = readField(batch, "c");
+        if (!(groupsValue instanceof Collection)) {
+            return out.append(" groups=unavailable").toString();
+        }
+        Collection<?> groups = (Collection<?>) groupsValue;
+        out.append(" groups=").append(groups.size()).append('[');
+        int groupIndex = 0;
+        for (Object group : groups) {
+            if (groupIndex > 0) {
+                out.append(", ");
+            }
+            if (groupIndex++ >= 3) {
+                out.append('…');
+                break;
+            }
+            Object sightingsValue = readField(group, "c");
+            Object identity = readField(group, "e");
+            out.append("{flags=")
+                    .append(safe(readField(group, "b")))
+                    .append(", sightings=")
+                    .append(collectionSize(sightingsValue))
+                    .append(", time=")
+                    .append(describePrimitiveFields(readField(group, "d")))
+                    .append(", identity=")
+                    .append(describeOneOf(identity));
+            if (sightingsValue instanceof Collection && !((Collection<?>) sightingsValue).isEmpty()) {
+                Object sighting = ((Collection<?>) sightingsValue).iterator().next();
+                out.append(", first={")
+                        .append(describeNamedFields(sighting, "b", "d", "e"))
+                        .append(", identifier=")
+                        .append(describeOneOf(readField(sighting, "c")))
+                        .append('}');
+            }
+            out.append('}');
+        }
+        return out.append(']').toString();
+    }
+
+    private static String describeOneOf(Object value) {
+        if (value == null) {
+            return "null";
+        }
+        Object payload = readField(value, "c");
+        return value.getClass().getSimpleName()
+                + "{case="
+                + safe(readField(value, "b"))
+                + ", payload="
+                + (payload == null ? "null" : payload.getClass().getSimpleName())
+                + ", scalars="
+                + describePrimitiveFields(payload)
+                + "}";
+    }
+
+    private static Object readField(Object value, String name) {
+        if (value == null) {
+            return null;
+        }
+        try {
+            Field field = value.getClass().getDeclaredField(name);
+            field.setAccessible(true);
+            return field.get(value);
+        } catch (Throwable ignored) {
+            return null;
         }
     }
 
