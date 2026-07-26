@@ -123,6 +123,8 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                                                     schedulingUtil, "j", scheduler, account);
                                             log("scheduled forced device sync account="
                                                     + account.name);
+                                            runDeviceSyncDirectly(
+                                                    loader, application, account);
                                         }
                                     } catch (Throwable throwable) {
                                         log("forced device sync scheduling failed="
@@ -134,6 +136,32 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                     }
                 });
         log("hooked " + key);
+    }
+
+    /**
+     * The Xiaomi build is not dispatching the one-off GMS task promptly. Run
+     * the same DeviceSyncService implementation directly so its real RPC,
+     * encryption and cache-writing chain remain unchanged.
+     */
+    private static void runDeviceSyncDirectly(
+            ClassLoader loader, Application application, Account account) {
+        try {
+            Class<?> serviceClass = XposedHelpers.findClass(
+                    "com.google.android.gms.findmydevice.spot.sync.DeviceSyncService",
+                    loader);
+            Object service = XposedHelpers.newInstance(serviceClass);
+            XposedHelpers.callMethod(service, "setModuleContext", application);
+            Object accountFactory = XposedHelpers.getObjectField(service, "f");
+            Object accountDependencies =
+                    XposedHelpers.callMethod(accountFactory, "a", account);
+            Object future = XposedHelpers.callMethod(
+                    service, "e", account, accountDependencies);
+            log("started direct device sync account=" + account.name
+                    + " future=" + future.getClass().getSimpleName());
+        } catch (Throwable throwable) {
+            log("direct device sync failed=" + throwable.getClass().getSimpleName()
+                    + ": " + safe(throwable.getMessage()));
+        }
     }
 
     /**
