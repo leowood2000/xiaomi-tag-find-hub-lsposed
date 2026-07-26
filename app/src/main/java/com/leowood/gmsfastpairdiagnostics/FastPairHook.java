@@ -52,6 +52,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
 
         log("loaded process=" + lpparam.processName);
         keepHalfSheetComponentEnabled();
+        hookSpotClientActions(lpparam.classLoader);
         hookSpotFastPairServerFlag(lpparam.classLoader);
         hookSelfLocationReportingFlag(lpparam.classLoader);
         hookFastPairSpotIntegrationFlag(lpparam.classLoader);
@@ -59,6 +60,68 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         hookLocatorTagEligibility(lpparam.classLoader);
         hookEligibilityPredicates(lpparam.classLoader);
         hookInitialPairingObserver(lpparam.classLoader);
+    }
+
+    /**
+     * Find Hub web commands arrive through GCMReceiverChimeraService. On the
+     * affected China configuration, the service rejects the signed command
+     * before BLE handling because ccnl.a() reads the underlying server flags
+     * directly instead of calling the jwbd wrapper methods hooked below.
+     *
+     * A second gate, jwbd.k(), controls the signed SPOT client-action handler.
+     * Signature verification remains in Google's command parser; these hooks
+     * only allow the normal receiver and handler to run.
+     */
+    private static void hookSpotClientActions(ClassLoader loader) {
+        hookBooleanGate(
+                loader,
+                "ccnl",
+                "a",
+                "finderUseCases",
+                "Find Hub GCM receiver Finder-use-case gate");
+        hookBooleanGate(
+                loader,
+                "jwbd",
+                "k",
+                "enableSpotClientActionsHandler",
+                "Find Hub flag enable_spot_client_actions_handler");
+    }
+
+    private static void hookBooleanGate(
+            ClassLoader loader,
+            String className,
+            String methodName,
+            String keySuffix,
+            String label) {
+        Class<?> type = XposedHelpers.findClassIfExists(className, loader);
+        if (type == null) {
+            log(className + " not found for " + keySuffix);
+            return;
+        }
+
+        String key = type.getName() + "#" + methodName + ":" + keySuffix;
+        if (!HOOKED.add(key)) {
+            return;
+        }
+
+        Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                type,
+                methodName,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (param.hasThrowable() || !(param.getResult() instanceof Boolean)) {
+                            return;
+                        }
+                        boolean original = (Boolean) param.getResult();
+                        if (!original) {
+                            param.setResult(true);
+                        }
+                        log(label + " original=" + original + " effective=true");
+                    }
+                });
+
+        log("hooked " + key + " overloads=" + unhooks.size());
     }
 
     /**
