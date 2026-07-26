@@ -63,6 +63,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         hookLocationUploadScheduling(lpparam.classLoader);
         hookOwnerUploadResponse(lpparam.classLoader);
         hookOwnedDeviceSyncResult(lpparam.classLoader);
+        hookServerSettingsCallbacks(lpparam.classLoader);
         hookSpotFastPairServerFlag(lpparam.classLoader);
         hookSelfLocationReportingFlag(lpparam.classLoader);
         hookFastPairSpotIntegrationFlag(lpparam.classLoader);
@@ -155,10 +156,122 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                         + java.util.Arrays.asList(accounts).indexOf(account)
                         + " future=" + future.getClass().getSimpleName());
             }
+            runServerSettingsWriteAndReadback(loader, application);
         } catch (Throwable error) {
             log("owned-device sync inspection failed="
                     + error.getClass().getSimpleName() + ": " + safe(error.getMessage()));
         }
+    }
+
+    /**
+     * Test-only diagnostic which uses the same public-in-GMS Spot.API calls as
+     * Find Hub's setup wizard and settings UI.  The response is deliberately
+     * not modified: the follow-up Get call exposes whether the server accepted
+     * or policy-filtered the requested settings.
+     */
+    private static void runServerSettingsWriteAndReadback(
+            ClassLoader loader, Application application) {
+        try {
+            Class<?> clientClass = XposedHelpers.findClass("cbil", loader);
+            Object client = XposedHelpers.newInstance(clientClass, application);
+
+            Class<?> networkSettingsClass = XposedHelpers.findClass(
+                    "com.google.android.gms.findmydevice.spot."
+                            + "FindMyDeviceNetworkSettings",
+                    loader);
+            Object networkSettings = XposedHelpers.newInstance(networkSettingsClass);
+            XposedHelpers.setIntField(networkSettings, "a", 2);
+
+            Class<?> changeRequestClass = XposedHelpers.findClass(
+                    "com.google.android.gms.findmydevice.spot."
+                            + "ChangeFindMyDeviceSettingsRequest",
+                    loader);
+            Object changeRequest = XposedHelpers.newInstance(changeRequestClass);
+            XposedHelpers.setObjectField(changeRequest, "a", Boolean.TRUE);
+            XposedHelpers.setObjectField(changeRequest, "b", Boolean.TRUE);
+            XposedHelpers.setObjectField(changeRequest, "c", networkSettings);
+            XposedHelpers.setBooleanField(changeRequest, "d", true);
+            Object changeFuture = XposedHelpers.callMethod(client, "f", changeRequest);
+            log("submitted server settings change"
+                    + " fmd=true secondary=true networkMode=2 sync=true"
+                    + " future=" + changeFuture.getClass().getSimpleName());
+
+            Thread.sleep(10000L);
+            Class<?> getRequestClass = XposedHelpers.findClass(
+                    "com.google.android.gms.findmydevice.spot."
+                            + "GetFindMyDeviceSettingsRequest",
+                    loader);
+            Object getRequest = XposedHelpers.newInstance(getRequestClass);
+            Object getFuture = XposedHelpers.callMethod(client, "g", getRequest);
+            log("requested raw server settings readback future="
+                    + getFuture.getClass().getSimpleName());
+        } catch (Throwable error) {
+            log("server settings write/readback failed="
+                    + error.getClass().getSimpleName() + ": " + safe(error.getMessage()));
+        }
+    }
+
+    private static void hookServerSettingsCallbacks(ClassLoader loader) {
+        Class<?> changeCallback = XposedHelpers.findClassIfExists("cbij", loader);
+        if (changeCallback != null) {
+            String key = changeCallback.getName() + "#a:serverSettingsChange";
+            if (HOOKED.add(key)) {
+                Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                        changeCallback,
+                        "a",
+                        new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                if (param.args != null && param.args.length == 2) {
+                                    log("server settings change callback status="
+                                            + safe(param.args[0])
+                                            + " responseClass="
+                                            + (param.args[1] == null
+                                            ? "null"
+                                            : param.args[1].getClass().getSimpleName()));
+                                }
+                            }
+                        });
+                log("hooked " + key + " overloads=" + unhooks.size());
+            }
+        }
+
+        Class<?> getCallback = XposedHelpers.findClassIfExists("cbii", loader);
+        if (getCallback != null) {
+            String key = getCallback.getName() + "#c:serverSettingsReadback";
+            if (HOOKED.add(key)) {
+                Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                        getCallback,
+                        "c",
+                        new XC_MethodHook() {
+                            @Override
+                            protected void beforeHookedMethod(MethodHookParam param) {
+                                if (param.args == null
+                                        || param.args.length != 2
+                                        || param.args[1] == null) {
+                                    return;
+                                }
+                                Object response = param.args[1];
+                                log("raw server settings status=" + safe(param.args[0])
+                                        + " a=" + safe(readField(response, "a"))
+                                        + " b=" + safe(readField(response, "b"))
+                                        + " c.mode=" + nestedInt(response, "c", "a")
+                                        + " f=" + safe(readField(response, "f"))
+                                        + " g=" + safe(readField(response, "g"))
+                                        + " i=" + safe(readField(response, "i"))
+                                        + " j=" + safe(readField(response, "j"))
+                                        + " l.mode=" + nestedInt(response, "l", "a")
+                                        + " m=" + safe(readField(response, "m")));
+                            }
+                        });
+                log("hooked " + key + " overloads=" + unhooks.size());
+            }
+        }
+    }
+
+    private static String nestedInt(Object owner, String field, String nestedField) {
+        Object nested = readField(owner, field);
+        return nested == null ? "null" : safe(readField(nested, nestedField));
     }
 
     private static void hookOwnerUploadResponse(ClassLoader loader) {
