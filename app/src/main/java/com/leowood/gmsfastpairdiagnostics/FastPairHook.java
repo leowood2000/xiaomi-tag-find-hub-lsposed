@@ -1,5 +1,9 @@
 package com.leowood.gmsfastpairdiagnostics;
 
+import android.accounts.Account;
+import android.accounts.AccountManager;
+import android.app.Application;
+import android.app.Instrumentation;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -58,6 +62,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         hookLocationReportDiagnostics(lpparam.classLoader);
         hookLocationUploadScheduling(lpparam.classLoader);
         hookOwnerUploadResponse(lpparam.classLoader);
+        hookOwnedDeviceSyncResult(lpparam.classLoader);
         hookSpotFastPairServerFlag(lpparam.classLoader);
         hookSelfLocationReportingFlag(lpparam.classLoader);
         hookFastPairSpotIntegrationFlag(lpparam.classLoader);
@@ -65,6 +70,95 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         hookLocatorTagEligibility(lpparam.classLoader);
         hookEligibilityPredicates(lpparam.classLoader);
         hookInitialPairingObserver(lpparam.classLoader);
+        if ("com.google.android.gms".equals(lpparam.processName)) {
+            scheduleOwnedDeviceSyncInspection(lpparam.classLoader);
+        }
+    }
+
+    private static void hookOwnedDeviceSyncResult(ClassLoader loader) {
+        Class<?> continuation = XposedHelpers.findClassIfExists("ccko", loader);
+        if (continuation == null) {
+            log("ccko not found for owned-device sync diagnostic");
+            return;
+        }
+        String key = continuation.getName() + "#a:ownedDeviceSyncDiagnostic";
+        if (!HOOKED.add(key)) {
+            return;
+        }
+        Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
+                continuation,
+                "a",
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (param.args == null
+                                || param.args.length == 0
+                                || param.args[0] == null
+                                || !"isbs".equals(param.args[0].getClass().getName())) {
+                            return;
+                        }
+                        Object response = param.args[0];
+                        log("owned-device sync response computedEidDevices="
+                                + fieldCollectionSize(response, "c")
+                                + " precomputedEidDevices="
+                                + fieldCollectionSize(response, "d")
+                                + " otherDevices=" + fieldCollectionSize(response, "e")
+                                + " keyData=" + fieldCollectionSize(response, "g")
+                                + " deviceTypeCodes="
+                                + summarizeCollection(readField(response, "h")));
+                    }
+                });
+        log("hooked " + key + " overloads=" + unhooks.size());
+    }
+
+    private static void scheduleOwnedDeviceSyncInspection(final ClassLoader loader) {
+        String key = "Instrumentation#callApplicationOnCreate:ownedDeviceSyncInspection";
+        if (!HOOKED.add(key)) {
+            return;
+        }
+        XposedBridge.hookAllMethods(
+                Instrumentation.class,
+                "callApplicationOnCreate",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (param.args == null
+                                || param.args.length == 0
+                                || !(param.args[0] instanceof Application)) {
+                            return;
+                        }
+                        Application application = (Application) param.args[0];
+                        new Thread(
+                                () -> runOwnedDeviceSync(loader, application),
+                                "FmdnOwnedDeviceSyncDiag").start();
+                    }
+                });
+        log("hooked " + key);
+    }
+
+    private static void runOwnedDeviceSync(ClassLoader loader, Application application) {
+        try {
+            Thread.sleep(5000L);
+            Account[] accounts = AccountManager.get(application)
+                    .getAccountsByType("com.google");
+            Class<?> serviceClass = XposedHelpers.findClass(
+                    "com.google.android.gms.findmydevice.spot.sync.DeviceSyncService",
+                    loader);
+            for (Account account : accounts) {
+                Object service = XposedHelpers.newInstance(serviceClass);
+                XposedHelpers.callMethod(service, "setModuleContext", application);
+                Object accountFactory = XposedHelpers.getObjectField(service, "f");
+                Object dependencies = XposedHelpers.callMethod(accountFactory, "a", account);
+                Object future = XposedHelpers.callMethod(
+                        service, "e", account, dependencies);
+                log("started owned-device sync accountIndex="
+                        + java.util.Arrays.asList(accounts).indexOf(account)
+                        + " future=" + future.getClass().getSimpleName());
+            }
+        } catch (Throwable error) {
+            log("owned-device sync inspection failed="
+                    + error.getClass().getSimpleName() + ": " + safe(error.getMessage()));
+        }
     }
 
     private static void hookOwnerUploadResponse(ClassLoader loader) {
@@ -92,7 +186,8 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                                         + fieldCollectionSize(batch, "c")
                                         + " metadata=" + describeUnionField(batch, "d")
                                         + " accountCandidates="
-                                        + collectionSize(param.args[1]));
+                                        + collectionSize(param.args[1])
+                                        + " identifiers=" + describeBatchIdentifiers(batch));
                             }
                         });
                 log("hooked " + batchKey + " overloads=" + unhooks.size());
@@ -183,6 +278,95 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                     .append(" status=")
                     .append(safe(readField(group, "c")));
             if (++index >= 8) {
+                break;
+            }
+        }
+        return out.append(']').toString();
+    }
+
+    private static String describeBatchIdentifiers(Object batch) {
+        Object groups = readField(batch, "c");
+        if (!(groups instanceof Collection)) {
+            return "unavailable";
+        }
+        StringBuilder out = new StringBuilder("[");
+        int groupIndex = 0;
+        for (Object group : (Collection<?>) groups) {
+            if (groupIndex > 0) {
+                out.append(", ");
+            }
+            Object sightings = readField(group, "c");
+            out.append("{identity=")
+                    .append(describeHashedUnion(readField(group, "e")))
+                    .append(", reports=");
+            if (!(sightings instanceof Collection)) {
+                out.append("unavailable");
+            } else {
+                out.append('[');
+                int sightingIndex = 0;
+                for (Object sighting : (Collection<?>) sightings) {
+                    if (sightingIndex > 0) {
+                        out.append(',');
+                    }
+                    out.append("{identifier=")
+                            .append(describeHashedUnion(readField(sighting, "c")))
+                            .append(", contribution=")
+                            .append(safe(readField(sighting, "d")))
+                            .append(", trusted=")
+                            .append(safe(readField(sighting, "e")))
+                            .append('}');
+                    if (++sightingIndex >= 4) {
+                        break;
+                    }
+                }
+                out.append(']');
+            }
+            out.append('}');
+            if (++groupIndex >= 4) {
+                break;
+            }
+        }
+        return out.append(']').toString();
+    }
+
+    private static String describeHashedUnion(Object union) {
+        if (union == null) {
+            return "null";
+        }
+        Object value = readField(union, "c");
+        return union.getClass().getSimpleName()
+                + "(case=" + safe(readField(union, "b"))
+                + ", valueClass=" + (value == null ? "null" : value.getClass().getSimpleName())
+                + ", valueHash=" + stableValueHash(value) + ")";
+    }
+
+    private static int stableValueHash(Object value) {
+        if (value == null) {
+            return 0;
+        }
+        try {
+            Object bytes = XposedHelpers.callMethod(value, "N");
+            if (bytes instanceof byte[]) {
+                return Arrays.hashCode((byte[]) bytes);
+            }
+        } catch (Throwable ignored) {
+            // Fall through to the protobuf object's stable hash.
+        }
+        return value.hashCode();
+    }
+
+    private static String summarizeCollection(Object value) {
+        if (!(value instanceof Collection)) {
+            return "unavailable";
+        }
+        StringBuilder out = new StringBuilder("[");
+        int index = 0;
+        for (Object item : (Collection<?>) value) {
+            if (index > 0) {
+                out.append(',');
+            }
+            out.append(safe(item));
+            if (++index >= 16) {
                 break;
             }
         }
