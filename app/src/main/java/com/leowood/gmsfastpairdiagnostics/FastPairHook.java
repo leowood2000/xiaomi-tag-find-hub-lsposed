@@ -15,6 +15,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
@@ -24,11 +25,8 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
- * Diagnostics for the exact obfuscated classes shipped in Google Play services
- * 26.26.34 (260400-945364269).
- *
- * This version deliberately does not change a return value. It records the
- * decision chain so the actual rejecting predicate can be identified safely.
+ * Xiaomi Tag compatibility fixes for the exact obfuscated classes shipped in
+ * Google Play services 26.26.34 (260400-945364269).
  */
 public final class FastPairHook implements IXposedHookLoadPackage {
     private static final String TAG = "[GmsFastPairDiag] ";
@@ -59,20 +57,12 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         log("loaded process=" + lpparam.processName);
         keepHalfSheetComponentEnabled();
         hookSpotClientActions(lpparam.classLoader);
-        hookLocationReportDiagnostics(lpparam.classLoader);
-        hookLocationUploadScheduling(lpparam.classLoader);
-        hookOwnerUploadResponse(lpparam.classLoader);
-        hookOwnedDeviceSyncResult(lpparam.classLoader);
-        hookServerSettingsCallbacks(lpparam.classLoader);
         hookSpotFastPairServerFlag(lpparam.classLoader);
         hookSelfLocationReportingFlag(lpparam.classLoader);
         hookFastPairSpotIntegrationFlag(lpparam.classLoader);
-        hookFinalDecision(lpparam.classLoader);
         hookLocatorTagEligibility(lpparam.classLoader);
-        hookEligibilityPredicates(lpparam.classLoader);
-        hookInitialPairingObserver(lpparam.classLoader);
         if ("com.google.android.gms".equals(lpparam.processName)) {
-            scheduleOwnedDeviceSyncInspection(lpparam.classLoader);
+            installServerSettingsSync(lpparam.classLoader);
         }
     }
 
@@ -707,6 +697,179 @@ public final class FastPairHook implements IXposedHookLoadPackage {
             }
         }
         return "none";
+    }
+
+    private static final AtomicBoolean SETTINGS_GET_SENT = new AtomicBoolean();
+    private static final AtomicBoolean SETTINGS_CHANGE_SENT = new AtomicBoolean();
+    private static volatile Application settingsApplication;
+
+    /**
+     * Affected China-region setups can provision a Tag and upload the initial
+     * enrollment location while leaving the account-side FMDN state disabled.
+     * Read the real Spot.API state and submit Google's normal "all locations"
+     * request only when that state is incomplete.
+     */
+    private static void installServerSettingsSync(final ClassLoader loader) {
+        hookConditionalSettingsReadback(loader);
+        hookSettingsChangeResult(loader);
+
+        String key = "Instrumentation#callApplicationOnCreate:serverSettingsSync";
+        if (!HOOKED.add(key)) {
+            return;
+        }
+        XposedBridge.hookAllMethods(
+                Instrumentation.class,
+                "callApplicationOnCreate",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (param.args == null
+                                || param.args.length == 0
+                                || !(param.args[0] instanceof Application)) {
+                            return;
+                        }
+                        settingsApplication = (Application) param.args[0];
+                        new Thread(
+                                () -> requestAccountSettings(loader),
+                                "FindHubSettingsSync").start();
+                    }
+                });
+        log("hooked " + key);
+    }
+
+    private static void requestAccountSettings(ClassLoader loader) {
+        if (!SETTINGS_GET_SENT.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            Thread.sleep(5000L);
+            Object client = XposedHelpers.newInstance(
+                    XposedHelpers.findClass("cbil", loader),
+                    settingsApplication);
+            Object request = XposedHelpers.newInstance(XposedHelpers.findClass(
+                    "com.google.android.gms.findmydevice.spot."
+                            + "GetFindMyDeviceSettingsRequest",
+                    loader));
+            XposedHelpers.callMethod(client, "g", request);
+            log("requested account Find Hub settings");
+        } catch (Throwable error) {
+            log("account settings read failed="
+                    + error.getClass().getSimpleName() + ": " + safe(error.getMessage()));
+        }
+    }
+
+    private static void hookConditionalSettingsReadback(final ClassLoader loader) {
+        Class<?> callback = XposedHelpers.findClassIfExists("cbii", loader);
+        if (callback == null) {
+            log("cbii Find Hub settings callback not found");
+            return;
+        }
+        String key = callback.getName() + "#c:conditionalServerSettingsSync";
+        if (!HOOKED.add(key)) {
+            return;
+        }
+        XposedBridge.hookAllMethods(
+                callback,
+                "c",
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (param.args == null
+                                || param.args.length != 2
+                                || param.args[1] == null) {
+                            return;
+                        }
+                        Object response = param.args[1];
+                        boolean findMyDevice = booleanField(response, "a");
+                        boolean secondary = booleanField(response, "b");
+                        boolean networkEnabled = booleanField(response, "f");
+                        int networkMode = nestedIntField(response, "c", "a");
+                        boolean ready = findMyDevice
+                                && secondary
+                                && networkEnabled
+                                && networkMode == 2;
+                        log("account Find Hub settings ready=" + ready
+                                + " networkMode=" + networkMode);
+                        if (!ready) {
+                            submitAccountSettings(loader);
+                        }
+                    }
+                });
+        log("hooked " + key);
+    }
+
+    private static void submitAccountSettings(ClassLoader loader) {
+        if (settingsApplication == null
+                || !SETTINGS_CHANGE_SENT.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            Object networkSettings = XposedHelpers.newInstance(XposedHelpers.findClass(
+                    "com.google.android.gms.findmydevice.spot."
+                            + "FindMyDeviceNetworkSettings",
+                    loader));
+            XposedHelpers.setIntField(networkSettings, "a", 2);
+
+            Object request = XposedHelpers.newInstance(XposedHelpers.findClass(
+                    "com.google.android.gms.findmydevice.spot."
+                            + "ChangeFindMyDeviceSettingsRequest",
+                    loader));
+            XposedHelpers.setObjectField(request, "a", Boolean.TRUE);
+            XposedHelpers.setObjectField(request, "b", Boolean.TRUE);
+            XposedHelpers.setObjectField(request, "c", networkSettings);
+            XposedHelpers.setBooleanField(request, "d", true);
+
+            Object client = XposedHelpers.newInstance(
+                    XposedHelpers.findClass("cbil", loader),
+                    settingsApplication);
+            XposedHelpers.callMethod(client, "f", request);
+            log("submitted account Find Hub settings networkMode=2");
+        } catch (Throwable error) {
+            log("account settings change failed="
+                    + error.getClass().getSimpleName() + ": " + safe(error.getMessage()));
+        }
+    }
+
+    private static void hookSettingsChangeResult(ClassLoader loader) {
+        Class<?> callback = XposedHelpers.findClassIfExists("cbij", loader);
+        if (callback == null) {
+            log("cbij Find Hub settings change callback not found");
+            return;
+        }
+        String key = callback.getName() + "#a:conditionalServerSettingsSync";
+        if (!HOOKED.add(key)) {
+            return;
+        }
+        XposedBridge.hookAllMethods(
+                callback,
+                "a",
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        if (param.args != null && param.args.length > 0) {
+                            log("account Find Hub settings change status="
+                                    + safe(param.args[0]));
+                        }
+                    }
+                });
+        log("hooked " + key);
+    }
+
+    private static boolean booleanField(Object owner, String name) {
+        try {
+            return XposedHelpers.getBooleanField(owner, name);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static int nestedIntField(Object owner, String name, String nestedName) {
+        try {
+            Object nested = XposedHelpers.getObjectField(owner, name);
+            return nested == null ? -1 : XposedHelpers.getIntField(nested, nestedName);
+        } catch (Throwable ignored) {
+            return -1;
+        }
     }
 
     /**
