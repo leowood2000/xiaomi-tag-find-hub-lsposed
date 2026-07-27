@@ -701,6 +701,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
 
     private static final AtomicBoolean SETTINGS_GET_SENT = new AtomicBoolean();
     private static final AtomicBoolean SETTINGS_CHANGE_SENT = new AtomicBoolean();
+    private static final AtomicBoolean OWNED_DEVICE_SYNC_SENT = new AtomicBoolean();
     private static volatile Application settingsApplication;
 
     /**
@@ -730,11 +731,45 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                         }
                         settingsApplication = (Application) param.args[0];
                         new Thread(
-                                () -> requestAccountSettings(loader),
+                                () -> {
+                                    refreshOwnedDeviceCache(loader);
+                                    requestAccountSettings(loader);
+                                },
                                 "FindHubSettingsSync").start();
                     }
                 });
         log("hooked " + key);
+    }
+
+    /**
+     * Web client actions use the account's owned-device/EID cache before
+     * connecting to the Tag.  Refresh it through GMS's normal DeviceSyncService
+     * once when the main process starts.
+     */
+    private static void refreshOwnedDeviceCache(ClassLoader loader) {
+        if (settingsApplication == null
+                || !OWNED_DEVICE_SYNC_SENT.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            Thread.sleep(3000L);
+            Account[] accounts = AccountManager.get(settingsApplication)
+                    .getAccountsByType("com.google");
+            Class<?> serviceClass = XposedHelpers.findClass(
+                    "com.google.android.gms.findmydevice.spot.sync.DeviceSyncService",
+                    loader);
+            for (Account account : accounts) {
+                Object service = XposedHelpers.newInstance(serviceClass);
+                XposedHelpers.callMethod(service, "setModuleContext", settingsApplication);
+                Object accountFactory = XposedHelpers.getObjectField(service, "f");
+                Object dependencies = XposedHelpers.callMethod(accountFactory, "a", account);
+                XposedHelpers.callMethod(service, "e", account, dependencies);
+            }
+            log("started owned-device cache sync accounts=" + accounts.length);
+        } catch (Throwable error) {
+            log("owned-device cache sync failed="
+                    + error.getClass().getSimpleName() + ": " + safe(error.getMessage()));
+        }
     }
 
     private static void requestAccountSettings(ClassLoader loader) {

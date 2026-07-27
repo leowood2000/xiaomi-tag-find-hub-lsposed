@@ -1,8 +1,8 @@
 # Xiaomi Tag · Find Hub 修复（LSPosed）
 
-这是一个针对国行小米手机的实验性 LSPosed 模块，用来恢复 Google Play 服务中的 Fast Pair / Find Hub（查找中心）配对流程，并诊断 Find Hub 在中国大陆显示 Xiaomi Tag 时的地图坐标偏移。
+这是一个针对国行小米手机的实验性 LSPosed 模块，用来恢复 Google Play 服务中的 Fast Pair / Find Hub（查找中心）配对、云端位置更新和网页指令，并修正 Find Hub 在中国大陆显示 Xiaomi Tag 时的地图坐标偏移。
 
-本项目已经在以下环境中完整跑通：手机发现 Xiaomi Tag、弹出配对页面、完成连接，并成功打开“储存最新的位置信息”。
+本项目已经在以下环境中完整跑通：手机发现 Xiaomi Tag、弹出配对页面、完成连接、网页位置持续更新，以及网页端让 Tag 响铃。
 
 ## 已验证环境
 
@@ -29,24 +29,43 @@
 2. 在 LSPosed 中启用本模块。
 3. 在 LSPosed 中勾选以下作用域：
    - **Google Play 服务**（`com.google.android.gms`），用于 Fast Pair / Find Hub 配对修复。
-   - **Find Hub**（`com.google.android.apps.adm`），用于地图坐标诊断。
+   - **Find Hub**（`com.google.android.apps.adm`），用于地图坐标修正。
 4. 重启手机。
 5. 让 Tag 重新进入配对模式；确认听到两声后，将它靠近手机。
 6. 按照 Google Fast Pair / Find Hub 页面完成连接。
 
 如果升级 APK 时提示签名不一致，请先卸载旧版模块再安装新版，然后重新在 LSPosed 中启用并重启。
 
-## 必须打开的三个开关
+## 必须打开的内部开关
 
-国行环境中的 Google Play 服务会通过内部 Phenotype 配置关闭 Find Hub 的关键路径。本模块把以下三个开关强制设为开启：
+国行环境中的 Google Play 服务会通过内部 Phenotype 配置关闭 Find Hub 的关键路径。本模块只在相关调用点打开以下开关：
 
 | GMS 内部开关 | 本版本对应方法 | 关闭时的表现 |
 | --- | --- | --- |
 | `EnableFindMyDeviceModule__enable_fast_pair_accessories` | `jwbd.g()` | `SpotFastPair.API` 返回 `API_UNAVAILABLE` / status 17，无法连接 Find Hub 服务 |
 | `enable_fast_pair_spot_integration` | `jyxk.K()` | 扫描阶段返回 `DEVICE_NOT_SUPPORTED`，或定位 Tag 的最终连接页面失败 |
 | `EnableFindMyDeviceModule__enable_self_location_reporting` | `jwbd.j()` | 开启“储存最新的位置信息”时失败，并出现 `Self location reporting is disabled` |
+| `EnableFindMyDeviceModule__enable_spot_client_actions_handler` | `jwbd.k()` | 网页端签名指令到达手机后不进入 SPOT 指令处理器 |
+| Finder use-case 总门控 | `ccnl.a()` | 网页端响铃指令在 GCM 接收阶段被丢弃 |
 
 这些是 Google Play 服务内部的服务端/Phenotype 开关，不是 Android 的普通系统属性，因此用 `adb shell setprop` 修改手机型号或 fingerprint 并不能直接打开它们。
+
+## 云端位置更新修复
+
+部分国行环境在配对时可以向网页写入一次正确位置，但之后只更新手机
+Find Hub 应用中的本地位置，网页端时间和位置不再变化。实机确认这种
+情况下 Tag、Owner Key、sighting 生成和网络请求均正常，缺失的是账号侧
+Find Hub 网络设置。
+
+模块启动后会通过 Google Play 服务自带的 `Spot.API` 读取真实账号状态。
+只有当 Find My Device / Find Hub 网络尚未完整开启时，才提交与 Google
+设置页相同的“所有位置”（`networkMode=2`）请求；已经开启时只读取，
+不会重复改写。模块不强制缩短 Google 原生上传周期，也不伪造位置或修改
+上传数据。
+
+该操作会为当前 Google 账号开启 Find Hub 网络和最后位置保存。安装即
+表示同意这一行为；若不希望使用云端位置网络，请停用模块后在 Google
+系统设置中关闭相应功能。
 
 ## 模块还做了什么
 
@@ -58,7 +77,7 @@
   - `FastPairSliceProvider`
   - `DiscoveryService`
   - `DevicesListActivity`
-- 保留诊断日志，并自动隐藏扫描到的蓝牙 MAC 地址。
+- 仅保留必要的状态日志，并自动隐藏扫描到的蓝牙 MAC 地址。
 
 `InitialPairingDeviceChecker` 并不是本次 `DEVICE_NOT_SUPPORTED` 的根源。在已验证的 GMS 版本里，它负责扫描已经通过初步资格判断后的缓存设备/地址检查；真正需要处理的是 locator-tag 路径和上述三个内部开关。
 
@@ -83,6 +102,7 @@ adb logcat -s LSPosedFramework | findstr GmsFastPairDiag
 - `enable_fast_pair_spot_integration`
 - `enable_self_location_reporting`
 - `bypass drhl#e DEVICE_NOT_SUPPORTED -> SUCCESS`
+- `account Find Hub settings ready=true networkMode=2`
 - 被 GMS 禁用但由模块保留的 Fast Pair 组件
 
 地图修正日志使用独立标签：
@@ -163,3 +183,8 @@ GitHub Actions 也会构建 APK，并将其作为 workflow artifact 上传。
 GPS 自动跟随更新均使用一致的坐标，不会在点击后再次被原始坐标拉偏。
 持续更新修正仅在 Find Hub 明确处于 `USER_LOCATION` 自动跟随状态时
 启用；手动拖图、设备/Tag 相机和中国大陆以外的坐标保持原有行为。
+
+`v0.9.7` 修复配对后只有首次位置写入网页、后续网页位置不再更新的问题：
+通过 GMS 自带的 `Spot.API` 条件式同步账号侧 Find Hub 网络设置。同时
+恢复网页端签名响铃指令所需的 GCM / SPOT 门控；不再包含测试阶段使用的
+强制快速上传、Owner 响应、位置流水线和设备同步诊断 Hook。
