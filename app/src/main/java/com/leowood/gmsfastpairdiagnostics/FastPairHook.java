@@ -205,6 +205,20 @@ public final class FastPairHook implements IXposedHookLoadPackage {
             Object getFuture = XposedHelpers.callMethod(client, "g", getRequest);
             log("requested raw server settings readback future="
                     + getFuture.getClass().getSimpleName());
+
+            Thread.sleep(5000L);
+            Class<?> uploadIntentFactory = XposedHelpers.findClass("cbqu", loader);
+            Intent uploadIntent = (Intent) XposedHelpers.callStaticMethod(
+                    uploadIntentFactory, "d", application);
+            if (uploadIntent == null) {
+                log("direct owner sighting upload intent unavailable");
+            } else {
+                uploadIntent.putExtra(
+                        "scheduled_by",
+                        "BATCH_UPLOAD_TRIGGERED_BY_FAST_EXECUTOR_SERVICE_ACTIVE_NETWORK");
+                ComponentName started = application.startService(uploadIntent);
+                log("direct owner sighting upload started=" + safe(started));
+            }
         } catch (Throwable error) {
             log("server settings write/readback failed="
                     + error.getClass().getSimpleName() + ": " + safe(error.getMessage()));
