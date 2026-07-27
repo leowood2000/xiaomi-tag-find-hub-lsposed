@@ -42,6 +42,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
     private static final Pattern MAC =
             Pattern.compile("(?i)([0-9a-f]{2}:){5}[0-9a-f]{2}");
     private static final Set<String> HOOKED = new HashSet<>();
+    private static final Set<String> LOGGED = new HashSet<>();
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -962,7 +963,9 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                         if (!original) {
                             param.setResult(true);
                         }
-                        log(label + " original=" + original + " effective=true");
+                        logOnce(
+                                "gate:" + label,
+                                label + " original=" + original + " effective=true");
                     }
                 });
 
@@ -1001,8 +1004,10 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                         if (!original) {
                             param.setResult(true);
                         }
-                        log("Find Hub flag enable_self_location_reporting original="
-                                + original + " effective=true");
+                        logOnce(
+                                "gate:enable_self_location_reporting",
+                                "Find Hub flag enable_self_location_reporting original="
+                                        + original + " effective=true");
                     }
                 });
 
@@ -1041,8 +1046,10 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                         if (!original) {
                             param.setResult(true);
                         }
-                        log("Fast Pair flag enable_fast_pair_spot_integration original="
-                                + original + " effective=true");
+                        logOnce(
+                                "gate:enable_fast_pair_spot_integration",
+                                "Fast Pair flag enable_fast_pair_spot_integration original="
+                                        + original + " effective=true");
                     }
                 });
 
@@ -1083,8 +1090,10 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                         if (!original) {
                             param.setResult(true);
                         }
-                        log("SPOT server flag enable_fast_pair_accessories original="
-                                + original + " effective=true");
+                        logOnce(
+                                "gate:enable_fast_pair_accessories",
+                                "SPOT server flag enable_fast_pair_accessories original="
+                                        + original + " effective=true");
                     }
                 });
 
@@ -1352,5 +1361,11 @@ public final class FastPairHook implements IXposedHookLoadPackage {
 
     private static void log(String message) {
         XposedBridge.log(TAG + message);
+    }
+
+    private static synchronized void logOnce(String key, String message) {
+        if (LOGGED.add(key)) {
+            log(message);
+        }
     }
 }
