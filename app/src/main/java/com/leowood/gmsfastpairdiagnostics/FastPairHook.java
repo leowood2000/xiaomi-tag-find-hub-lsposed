@@ -5,7 +5,9 @@ import android.accounts.AccountManager;
 import android.app.Application;
 import android.app.Instrumentation;
 import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 
 import java.lang.reflect.Field;
@@ -57,8 +59,42 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         }
 
         log("loaded process=" + lpparam.processName);
-        modernGms = hasBooleanMethod(lpparam.classLoader, "cido", "a")
-                && hasBooleanMethod(lpparam.classLoader, "jsmh", "h");
+        AtomicBoolean initialized = new AtomicBoolean();
+        XposedHelpers.findAndHookMethod(Application.class, "attach", Context.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        if (!initialized.compareAndSet(false, true)) return;
+                        Context context = (Context) param.args[0];
+                        try {
+                            PackageInfo info = context.getPackageManager().getPackageArchiveInfo(
+                                    lpparam.appInfo.sourceDir, 0);
+                            if (info == null || !"com.google.android.gms".equals(info.packageName)) {
+                                log("cannot identify loaded GMS APK; compatibility hooks disabled");
+                                return;
+                            }
+                            String mapping = GmsCompatibility.mapping(info);
+                            log("loaded GMS=" + info.versionName + " code="
+                                    + info.getLongVersionCode() + " mapping=" + mapping);
+                            context.sendBroadcast(new Intent(context, CompatibilityReceiver.class)
+                                    .setComponent(new ComponentName(
+                                            "com.leowood.gmsfastpairdiagnostics",
+                                            CompatibilityReceiver.class.getName()))
+                                    .setAction("com.leowood.gmsfastpairdiagnostics.CHECK_COMPATIBILITY"));
+                            if (mapping == null) {
+                                log("unknown GMS version; obfuscated hooks disabled");
+                                return;
+                            }
+                            modernGms = "26.36.35".equals(mapping);
+                            installCompatibilityHooks(lpparam);
+                        } catch (Throwable error) {
+                            log("version initialization failed: " + safe(error));
+                        }
+                    }
+                });
+    }
+
+    private static void installCompatibilityHooks(XC_LoadPackage.LoadPackageParam lpparam) {
         log("GMS mapping=" + (modernGms ? "26.36.35" : "26.26.34"));
         installSafely("components", () -> keepHalfSheetComponentEnabled());
         installSafely("web actions", () -> hookSpotClientActions(lpparam.classLoader));
