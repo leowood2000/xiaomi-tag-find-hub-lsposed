@@ -43,6 +43,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
             Pattern.compile("(?i)([0-9a-f]{2}:){5}[0-9a-f]{2}");
     private static final Set<String> HOOKED = new HashSet<>();
     private static final Set<String> LOGGED = new HashSet<>();
+    private static boolean modernGms;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -56,14 +57,47 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         }
 
         log("loaded process=" + lpparam.processName);
-        keepHalfSheetComponentEnabled();
-        hookSpotClientActions(lpparam.classLoader);
-        hookSpotFastPairServerFlag(lpparam.classLoader);
-        hookSelfLocationReportingFlag(lpparam.classLoader);
-        hookFastPairSpotIntegrationFlag(lpparam.classLoader);
-        hookLocatorTagEligibility(lpparam.classLoader);
+        modernGms = hasBooleanMethod(lpparam.classLoader, "cido", "a")
+                && hasBooleanMethod(lpparam.classLoader, "jsmh", "h");
+        log("GMS mapping=" + (modernGms ? "26.36.35" : "26.26.34"));
+        installSafely("components", () -> keepHalfSheetComponentEnabled());
+        installSafely("web actions", () -> hookSpotClientActions(lpparam.classLoader));
+        if (modernGms) {
+            installSafely("fast pair", () -> hookBooleanGate(lpparam.classLoader,
+                    "jsmh", "e", "fastPair", "enable_fast_pair_accessories"));
+            installSafely("self location", () -> hookBooleanGate(lpparam.classLoader,
+                    "jsmh", "h", "selfLocation", "enable_self_location_reporting"));
+            installSafely("spot integration", () -> hookBooleanGate(lpparam.classLoader,
+                    "jvlk", "N", "spotIntegration", "enable_fast_pair_spot_integration"));
+        } else {
+            installSafely("fast pair", () -> hookSpotFastPairServerFlag(lpparam.classLoader));
+            installSafely("self location", () -> hookSelfLocationReportingFlag(lpparam.classLoader));
+            installSafely("spot integration", () -> hookFastPairSpotIntegrationFlag(lpparam.classLoader));
+        }
+        installSafely("locator eligibility", () -> hookLocatorTagEligibility(lpparam.classLoader));
         if ("com.google.android.gms".equals(lpparam.processName)) {
-            installServerSettingsSync(lpparam.classLoader);
+            installSafely("account settings", () -> installServerSettingsSync(lpparam.classLoader));
+        }
+    }
+
+    private static void installSafely(String label, Runnable action) {
+        try {
+            action.run();
+        } catch (Throwable error) {
+            log("hook skipped " + label + ": " + error.getClass().getSimpleName()
+                    + " " + safe(error.getMessage()));
+        }
+    }
+
+    private static boolean hasBooleanMethod(ClassLoader loader, String name, String method) {
+        try {
+            Class<?> type = XposedHelpers.findClass(name, loader);
+            Method candidate = type.getDeclaredMethod(method);
+            return candidate.getReturnType() == boolean.class
+                    && Modifier.isStatic(candidate.getModifiers())
+                    && !Modifier.isAbstract(candidate.getModifiers());
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 
@@ -764,7 +798,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                 XposedHelpers.callMethod(service, "setModuleContext", settingsApplication);
                 Object accountFactory = XposedHelpers.getObjectField(service, "f");
                 Object dependencies = XposedHelpers.callMethod(accountFactory, "a", account);
-                XposedHelpers.callMethod(service, "e", account, dependencies);
+                XposedHelpers.callMethod(service, modernGms ? "d" : "e", account, dependencies);
             }
             log("started owned-device cache sync accounts=" + accounts.length);
         } catch (Throwable error) {
@@ -780,13 +814,13 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         try {
             Thread.sleep(5000L);
             Object client = XposedHelpers.newInstance(
-                    XposedHelpers.findClass("cbil", loader),
+                    XposedHelpers.findClass(modernGms ? "cgvp" : "cbil", loader),
                     settingsApplication);
             Object request = XposedHelpers.newInstance(XposedHelpers.findClass(
                     "com.google.android.gms.findmydevice.spot."
                             + "GetFindMyDeviceSettingsRequest",
                     loader));
-            XposedHelpers.callMethod(client, "g", request);
+            XposedHelpers.callMethod(client, modernGms ? "c" : "g", request);
             log("requested account Find Hub settings");
         } catch (Throwable error) {
             log("account settings read failed="
@@ -795,7 +829,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
     }
 
     private static void hookConditionalSettingsReadback(final ClassLoader loader) {
-        Class<?> callback = XposedHelpers.findClassIfExists("cbii", loader);
+        Class<?> callback = XposedHelpers.findClassIfExists(modernGms ? "cgvm" : "cbii", loader);
         if (callback == null) {
             log("cbii Find Hub settings callback not found");
             return;
@@ -856,9 +890,9 @@ public final class FastPairHook implements IXposedHookLoadPackage {
             XposedHelpers.setBooleanField(request, "d", true);
 
             Object client = XposedHelpers.newInstance(
-                    XposedHelpers.findClass("cbil", loader),
+                    XposedHelpers.findClass(modernGms ? "cgvp" : "cbil", loader),
                     settingsApplication);
-            XposedHelpers.callMethod(client, "f", request);
+            XposedHelpers.callMethod(client, modernGms ? "b" : "f", request);
             log("submitted account Find Hub settings networkMode=2");
         } catch (Throwable error) {
             log("account settings change failed="
@@ -867,7 +901,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
     }
 
     private static void hookSettingsChangeResult(ClassLoader loader) {
-        Class<?> callback = XposedHelpers.findClassIfExists("cbij", loader);
+        Class<?> callback = XposedHelpers.findClassIfExists(modernGms ? "cgvn" : "cbij", loader);
         if (callback == null) {
             log("cbij Find Hub settings change callback not found");
             return;
@@ -921,14 +955,14 @@ public final class FastPairHook implements IXposedHookLoadPackage {
     private static void hookSpotClientActions(ClassLoader loader) {
         hookBooleanGate(
                 loader,
-                "ccnl",
+                modernGms ? "cido" : "ccnl",
                 "a",
                 "finderUseCases",
                 "Find Hub GCM receiver Finder-use-case gate");
         hookBooleanGate(
                 loader,
-                "jwbd",
-                "k",
+                modernGms ? "jsmh" : "jwbd",
+                modernGms ? "i" : "k",
                 "enableSpotClientActionsHandler",
                 "Find Hub flag enable_spot_client_actions_handler");
     }
@@ -945,14 +979,18 @@ public final class FastPairHook implements IXposedHookLoadPackage {
             return;
         }
 
+        if (!hasBooleanMethod(loader, className, methodName)) {
+            log("skip incompatible boolean gate " + className + "#" + methodName);
+            return;
+        }
+
         String key = type.getName() + "#" + methodName + ":" + keySuffix;
         if (!HOOKED.add(key)) {
             return;
         }
 
-        Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
-                type,
-                methodName,
+        XC_MethodHook.Unhook unhook = XposedHelpers.findAndHookMethod(
+                type, methodName,
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
@@ -969,7 +1007,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                     }
                 });
 
-        log("hooked " + key + " overloads=" + unhooks.size());
+        log("hooked " + key + " exact boolean()");
     }
 
     /**
@@ -1153,7 +1191,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
     }
 
     private static void hookLocatorTagEligibility(ClassLoader loader) {
-        Class<?> locatorHandler = XposedHelpers.findClassIfExists("drhl", loader);
+        Class<?> locatorHandler = XposedHelpers.findClassIfExists(modernGms ? "dzkw" : "drhl", loader);
         if (locatorHandler == null) {
             log("drhl locator-tag handler not found");
             return;
@@ -1284,7 +1322,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
             return null;
         }
         for (Object arg : args) {
-            if (arg != null && "dreq".equals(arg.getClass().getName())) {
+            if (arg != null && (modernGms ? "dzhx" : "dreq").equals(arg.getClass().getName())) {
                 return arg;
             }
         }
