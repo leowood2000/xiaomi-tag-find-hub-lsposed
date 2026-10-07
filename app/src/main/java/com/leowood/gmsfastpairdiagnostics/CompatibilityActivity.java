@@ -50,4 +50,12 @@ public final class CompatibilityActivity extends Activity {
         setContentView(layout);
         CompatibilityReceiver.check(this);
     }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions,
+                                                     int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 1) {
+            onResume();
+        }
+    }
 }
