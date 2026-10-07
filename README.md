@@ -40,13 +40,17 @@
 
 国行环境中的 Google Play 服务会通过内部 Phenotype 配置关闭 Find Hub 的关键路径。本模块只在相关调用点打开以下开关：
 
-| GMS 内部开关 | 本版本对应方法 | 关闭时的表现 |
+| GMS 内部开关 | GMS 26.26.34 对应方法 | 关闭时的表现 |
 | --- | --- | --- |
 | `EnableFindMyDeviceModule__enable_fast_pair_accessories` | `jwbd.g()` | `SpotFastPair.API` 返回 `API_UNAVAILABLE` / status 17，无法连接 Find Hub 服务 |
 | `enable_fast_pair_spot_integration` | `jyxk.K()` | 扫描阶段返回 `DEVICE_NOT_SUPPORTED`，或定位 Tag 的最终连接页面失败 |
 | `EnableFindMyDeviceModule__enable_self_location_reporting` | `jwbd.j()` | 开启“储存最新的位置信息”时失败，并出现 `Self location reporting is disabled` |
 | `EnableFindMyDeviceModule__enable_spot_client_actions_handler` | `jwbd.k()` | 网页端签名指令到达手机后不进入 SPOT 指令处理器 |
 | Finder use-case 总门控 | `ccnl.a()` | 网页端响铃指令在 GCM 接收阶段被丢弃 |
+
+GMS `26.36.35` 的对应入口依次为 `jsmh.e()`、`jvlk.N()`、
+`jsmh.h()`、`jsmh.i()` 和 `cido.a()`；国际版 Tag 资格处理器为
+`dzkw.e(dzhx)`。模块自动选择已适配的映射。
 
 这些是 Google Play 服务内部的服务端/Phenotype 开关，不是 Android 的普通系统属性，因此用 `adb shell setprop` 修改手机型号或 fingerprint 并不能直接打开它们。
 
