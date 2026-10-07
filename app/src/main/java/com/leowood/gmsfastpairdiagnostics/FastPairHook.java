@@ -26,7 +26,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
  * Xiaomi Tag compatibility fixes for the exact obfuscated classes shipped in
- * Google Play services 26.26.34 (260400-945364269).
+ * Google Play services 26.26.34 and 26.36.35.
  */
 public final class FastPairHook implements IXposedHookLoadPackage {
     private static final String TAG = "[GmsFastPairDiag] ";
