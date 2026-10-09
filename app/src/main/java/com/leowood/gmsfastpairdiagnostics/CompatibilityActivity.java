@@ -8,6 +8,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.widget.Button;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 public final class CompatibilityActivity extends Activity {
@@ -27,13 +28,16 @@ public final class CompatibilityActivity extends Activity {
         try {
             PackageInfo info = GmsCompatibility.installed(this);
             String mapping = GmsCompatibility.mapping(info);
-            text.setText("Google Play 服务\n" + info.versionName
+            PackageInfo module = getPackageManager().getPackageInfo(getPackageName(), 0);
+            text.setText("模块版本：" + module.versionName
+                    + "（" + module.getLongVersionCode() + "）\n\n当前 Google Play 服务\n" + info.versionName
                     + "\n版本代码：" + info.getLongVersionCode()
                     + "\n\n" + (mapping == null
-                    ? "未知版本，需要更新模块。\n配对及云端混淆 Hook 已停用，地图修正独立运行。"
-                    : "此版本已有适配。\n请在 LSPosed 启用模块并勾选 Google Play 服务与 Find Hub，更新后重启。")
-                    + "\n\n已支持：26.26.34、26.36.35（指定构建）"
-                    + "\n仅适用于国际版 Xiaomi Tag，不适用于国行 Tag。");
+                    ? "尚未适配此构建。\n模块不会为此构建安装 GMS 混淆 Hook；不代表 Google 原生功能必然失效。地图修正独立运行。"
+                    : "此构建已有适配映射。\n这不代表模块已启用或所有功能均已验证。请在 LSPosed 启用模块，勾选 Google Play 服务与 Find Hub，更新后重启。")
+                    + "\n\n支持的完整 GMS 构建\n（完整版本名与版本代码须同时匹配）\n\n"
+                    + GmsCompatibility.supportedBuilds()
+                    + "\n\n仅适用于国际版 Xiaomi Tag，不适用于国行版 Xiaomi Tag。");
         } catch (Exception error) {
             text.setText("未能读取 Google Play 服务，请确认已安装。 ");
         }
@@ -47,7 +51,9 @@ public final class CompatibilityActivity extends Activity {
                     new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1));
             layout.addView(enable);
         }
-        setContentView(layout);
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(layout);
+        setContentView(scroll);
         CompatibilityReceiver.check(this);
     }
 
