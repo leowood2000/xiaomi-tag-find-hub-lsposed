@@ -12,6 +12,8 @@ public final class GmsCompatibility {
             return "26.26.34";
         if (code == 263635035L && "26.36.35 (260400-991383798)".equals(info.versionName))
             return "26.36.35";
+        if (code == 263737035L && "26.37.37 (260400-994713346)".equals(info.versionName))
+            return "26.37.37";
         return null;
     }
 
