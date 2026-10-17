@@ -37,6 +37,7 @@ public final class CompatibilityActivity extends Activity {
                     : "此构建已有适配映射。\n这不代表模块已启用或所有功能均已验证。请在 LSPosed 启用模块，勾选 Google Play 服务与 Find Hub，更新后重启。")
                     + "\n\n支持的完整 GMS 构建\n（完整版本名与版本代码须同时匹配）\n\n"
                     + GmsCompatibility.supportedBuilds()
+                    + "\n\n已配对 Tag 的网页响铃不受模块是否适配当前 GMS 版本影响。"
                     + "\n\n仅适用于国际版 Xiaomi Tag，不适用于国行版 Xiaomi Tag。");
         } catch (Exception error) {
             text.setText("未能读取 Google Play 服务，请确认已安装。 ");
