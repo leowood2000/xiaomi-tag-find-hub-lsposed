@@ -21,6 +21,13 @@ final class NativeConfigProbe {
                 Object store = XposedHelpers.callMethod(entry, "d");
                 Object snapshot = XposedHelpers.getObjectField(store, "c");
                 log("store DE=" + XposedHelpers.getBooleanField(store,"g"));
+                Object manager = XposedHelpers.getObjectField(store,"d");
+                Object shared = XposedHelpers.callMethod(XposedHelpers.getObjectField(manager,"e"),"c",true);
+                Object fileKey = XposedHelpers.newInstance(XposedHelpers.findClass("hjoq",loader),
+                        XposedHelpers.getObjectField(shared,"c"),"com.google.android.gms.phenotype","");
+                log("shared root="+XposedHelpers.getObjectField(shared,"e")
+                        +" dir="+XposedHelpers.getObjectField(shared,"d")
+                        +" leaf="+XposedHelpers.callMethod(fileKey,"a"));
                 if (snapshot != null) {
                     Map<?,?> flags = (Map<?,?>) XposedHelpers.getObjectField(snapshot,"h");
                     Object info = XposedHelpers.getObjectField(snapshot,"i");
