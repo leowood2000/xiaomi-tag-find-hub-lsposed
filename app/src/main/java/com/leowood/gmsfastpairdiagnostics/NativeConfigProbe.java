@@ -6,9 +6,31 @@ import android.net.Uri;
 import java.util.Map;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
+import de.robv.android.xposed.XC_MethodHook;
 
 /** Temporary read-only probe for the current 26.43.30 research build. */
 final class NativeConfigProbe {
+    static void install(ClassLoader loader) {
+        try {
+            XposedHelpers.findAndHookMethod("fysr",loader,"s",new XC_MethodHook() {
+                @Override protected void afterHookedMethod(MethodHookParam p) {
+                    log("debug authorization result="+(p.hasThrowable()?p.getThrowable():"passed"));
+                }
+            });
+            for(String name:new String[]{"fytd","fyte"}) {
+                XposedBridge.hookAllMethods(XposedHelpers.findClass(name,loader),"js",new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
+                        Object task=p.args[0];
+                        for(java.lang.reflect.Method m:task.getClass().getMethods()) {
+                            if(m.getParameterTypes().length==0 && m.getReturnType()==Exception.class)
+                                log("native API exception="+m.invoke(task));
+                        }
+                        log("native API success="+XposedHelpers.callMethod(task,"n"));
+                    }
+                });
+            }
+        } catch(Throwable e) { log("install probe error="+e); }
+    }
     static void inspect(Application app, ClassLoader loader) {
         try {
             Class<?> config = XposedHelpers.findClass("kgkv", loader);

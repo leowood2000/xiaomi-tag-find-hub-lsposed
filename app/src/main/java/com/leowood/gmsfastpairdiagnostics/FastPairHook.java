@@ -101,6 +101,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
     }
 
     private static void installCompatibilityHooks(XC_LoadPackage.LoadPackageParam lpparam) {
+        NativeConfigProbe.install(lpparam.classLoader);
         log("GMS mapping=" + (gms2643 ? "26.43.30" : gms2640 ? "26.40.32" : latestGms ? "26.37.37" : modernGms ? "26.36.35" : "26.26.34"));
         installSafely("components", () -> keepHalfSheetComponentEnabled());
         installSafely("web actions", () -> hookSpotClientActions(lpparam.classLoader));
