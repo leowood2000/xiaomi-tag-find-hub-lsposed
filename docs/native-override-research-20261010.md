@@ -1,5 +1,11 @@
 # Find Hub 原生启用路线：可行性研究备忘（2026-10-10）
 
+> [!IMPORTANT]
+> 后续实机进展见 [2026-11-06 阶段报告](native-override-progress-20261106.md)：
+> 已验证共享快照临时引导、官方 API 写入/删除，以及撤去单个配对门控 Hook
+> 后的原始 true 值；24 小时持久性仍在观察。本文保留历史记录，其中广播
+> 名称、SQL 示例和真实快照来源已有修正，请勿直接照抄为当前操作步骤。
+
 > [!NOTE]
 > 本文档为**纯研究备忘**，记录一次针对"让 GMS 原生启用 Find Hub（摆脱逐版本 Hook）"的可行性调查。
 > 它**不改变本模块的主线实现**——截至撰写时，模块功能仍完全依赖现有 LSPosed Hook（`FastPairHook.java` / `GmsCompatibility.java`）。
