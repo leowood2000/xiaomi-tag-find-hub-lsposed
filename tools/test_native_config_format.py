@@ -1,6 +1,10 @@
 import struct
 import unittest
-from native_config_format import Snapshot, add_bool, remove_added_bool, snapshot_leaf
+import tempfile
+import os
+import subprocess
+from pathlib import Path
+from native_config_format import Snapshot, add_bool, remove_added_bool, snapshot_leaf, require_unique_snapshot
 
 
 class NativeFormatTests(unittest.TestCase):
@@ -15,6 +19,48 @@ class NativeFormatTests(unittest.TestCase):
         self.assertNotEqual(snapshot_leaf("namespace"), snapshot_leaf("namespace", "account"))
         with self.assertRaises(ValueError):
             snapshot_leaf("../escape")
+
+    def test_discovery_refuses_missing_duplicate_and_corrupt_candidates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaises(ValueError):
+                require_unique_snapshot(root, "namespace")
+            first = root / "salt1" / snapshot_leaf("namespace")
+            first.parent.mkdir()
+            first.write_bytes(self.snapshot())
+            self.assertEqual(require_unique_snapshot(root, "namespace"), first.resolve())
+            second = root / "salt2" / first.name
+            second.parent.mkdir()
+            second.write_bytes(self.snapshot())
+            with self.assertRaises(ValueError):
+                require_unique_snapshot(root, "namespace")
+            second.unlink()
+            first.write_bytes(b"bad")
+            with self.assertRaises(ValueError):
+                require_unique_snapshot(root, "namespace")
+
+    def test_discovery_refuses_linked_salt_when_supported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / snapshot_leaf("namespace")).write_bytes(self.snapshot())
+            snapshots = root / "snapshots"
+            snapshots.mkdir()
+            try:
+                (snapshots / "salt").symlink_to(outside, target_is_directory=True)
+            except OSError:
+                if os.name != "nt":
+                    self.skipTest("Directory links unavailable to this process")
+                # Windows junctions provide a real filesystem escape test
+                # without changing Developer Mode or requesting admin rights.
+                result = subprocess.run(["cmd", "/c", "mklink", "/J",
+                                         str(snapshots / "salt"), str(outside)],
+                                        capture_output=True)
+                if result.returncode:
+                    self.skipTest("Directory symlinks and junctions unavailable")
+            with self.assertRaises(ValueError):
+                require_unique_snapshot(snapshots, "namespace")
 
     def test_patch_preserves_payload_unknown_metadata_and_rolls_back(self):
         source = self.snapshot(b"\x08\x07\x9a\x06\x03xyz")

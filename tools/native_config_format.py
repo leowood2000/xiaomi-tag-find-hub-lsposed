@@ -5,6 +5,7 @@ Only shared-snapshot format 1 has been verified. This is not an installer.
 import base64
 import struct
 from dataclasses import dataclass
+from pathlib import Path
 
 MASK = (1 << 64) - 1
 MAX_SIZE = 64 * 1024 * 1024
@@ -172,3 +173,26 @@ def remove_added_bool(data, name, ownership_token):
         raise ValueError("Override changed after patch; refusing rollback")
     metadata = b"".join(raw for _, _, _, raw in fields(snapshot.metadata) if raw != current)
     return Snapshot(snapshot.prefix, metadata, snapshot.payload).encode()
+
+
+def require_unique_snapshot(directory, namespace, account=""):
+    """Inspect an explicitly provided local directory; never guess newest salt.
+
+    A device bridge must independently establish that this is the active root.
+    This function does not claim that a unique on-disk file is the active store.
+    """
+    root = Path(directory).resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("Snapshot root is not a directory")
+    matches = list(root.glob("*/" + snapshot_leaf(namespace, account)))
+    if len(matches) != 1:
+        raise ValueError("Expected exactly one matching snapshot; refusing to guess")
+    path = matches[0]
+    resolved = path.resolve(strict=True)
+    if not resolved.is_relative_to(root) or path.is_symlink() or path.parent.is_symlink():
+        raise ValueError("Snapshot path escapes root or uses a symlink")
+    size = resolved.stat().st_size
+    if not 9 <= size <= MAX_SIZE:
+        raise ValueError("Invalid snapshot size")
+    Snapshot.parse(resolved.read_bytes())
+    return resolved
