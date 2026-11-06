@@ -811,6 +811,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                                 () -> {
                                     refreshOwnedDeviceCache(loader);
                                     requestAccountSettings(loader);
+                                    NativeConfigProbe.inspect(settingsApplication, loader);
                                 },
                                 "FindHubSettingsSync").start();
                     }
