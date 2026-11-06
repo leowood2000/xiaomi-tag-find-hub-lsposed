@@ -110,8 +110,12 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                     gms2643 ? "kbia" : gms2640 ? "jyfd" : latestGms ? "jtzg" : "jsmh", gms2643 ? "g" : latestGms ? "f" : "e", "fastPair", "enable_fast_pair_accessories"));
             installSafely("self location", () -> hookBooleanGate(lpparam.classLoader,
                     gms2643 ? "kbia" : gms2640 ? "jyfd" : latestGms ? "jtzg" : "jsmh", gms2643 ? "k" : latestGms ? "i" : "h", "selfLocation", "enable_self_location_reporting"));
-            installSafely("spot integration", () -> hookBooleanGate(lpparam.classLoader,
-                    gms2643 ? "keil" : gms2640 ? "kbfk" : latestGms ? "jwys" : "jvlk", gms2643 ? "P" : gms2640 ? "O" : "N", "spotIntegration", "enable_fast_pair_spot_integration"));
+            if (!gms2643) {
+                installSafely("spot integration", () -> hookBooleanGate(lpparam.classLoader,
+                        gms2640 ? "kbfk" : latestGms ? "jwys" : "jvlk", gms2640 ? "O" : "N", "spotIntegration", "enable_fast_pair_spot_integration"));
+            } else {
+                log("research: SPOT integration gate is NOT hooked; using native config");
+            }
         } else {
             installSafely("fast pair", () -> hookSpotFastPairServerFlag(lpparam.classLoader));
             installSafely("self location", () -> hookSelfLocationReportingFlag(lpparam.classLoader));

@@ -36,6 +36,10 @@ final class NativeConfigProbe {
             Class<?> config = XposedHelpers.findClass("kgkv", loader);
             Object raw = XposedHelpers.callMethod(XposedHelpers.newInstance(config), "l");
             log("raw enableDebugService=" + raw);
+            log("raw SPOT getter="+XposedHelpers.callMethod(
+                    XposedHelpers.newInstance(XposedHelpers.findClass("kein",loader)),"az")
+                    +" unhooked facade="+XposedHelpers.callStaticMethod(
+                    XposedHelpers.findClass("keil",loader),"P"));
             Object registry = XposedHelpers.getStaticObjectField(XposedHelpers.findClass("hjsn", loader), "a");
             Map<?,?> stores = (Map<?,?>) XposedHelpers.getObjectField(registry, "b");
             Object entry = stores.get("com.google.android.gms.phenotype");
