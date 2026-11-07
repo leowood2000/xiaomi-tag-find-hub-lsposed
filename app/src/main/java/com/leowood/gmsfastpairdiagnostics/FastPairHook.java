@@ -107,6 +107,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         else {
             log("research: component protection NOT installed");
             installSafely("component observer", () -> observeComponentChanges());
+            installSafely("discovery predicate observer", () -> observeDiscoveryPredicate(lpparam.classLoader));
         }
         installSafely("web actions", () -> hookSpotClientActions(lpparam.classLoader));
         if (modernGms) {
@@ -1200,6 +1201,32 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                 });
 
         log("hooked " + key + " overloads=" + unhooks.size());
+    }
+
+    private static void observeDiscoveryPredicate(ClassLoader loader) {
+        XposedHelpers.findAndHookMethod("jbxi", loader, "d", Context.class,
+                XposedHelpers.findClass("jbxh", loader), new XC_MethodHook() {
+                    @Override protected void afterHookedMethod(MethodHookParam param) {
+                        try {
+                            Context context = (Context) param.args[0];
+                            Object profile = param.args[1];
+                            Object flags = XposedHelpers.callMethod(
+                                    XposedHelpers.getStaticObjectField(
+                                            XposedHelpers.findClass("kehu", loader), "a"), "lD");
+                            log("research discovery predicate result=" + param.getResult()
+                                    + " enabled=" + XposedHelpers.callMethod(flags, "A")
+                                    + " minSdk=" + XposedHelpers.callMethod(flags, "i")
+                                    + " sdk=" + android.os.Build.VERSION.SDK_INT
+                                    + " usePrimary=" + XposedHelpers.callMethod(flags, "E")
+                                    + " profile=" + profile
+                                    + " bypassBle=" + XposedHelpers.callMethod(flags, "w")
+                                    + " hasBle=" + context.getPackageManager().hasSystemFeature("android.hardware.bluetooth_le"));
+                        } catch (Throwable error) {
+                            log("research discovery predicate observer failed=" + error.getClass().getSimpleName());
+                        }
+                    }
+                });
+        log("research: discovery predicate observer installed; no result changes");
     }
 
     private static void observeComponentChanges() {
