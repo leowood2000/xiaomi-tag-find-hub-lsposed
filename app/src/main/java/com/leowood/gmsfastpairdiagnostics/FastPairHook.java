@@ -28,7 +28,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
  * Xiaomi Tag compatibility fixes for the exact obfuscated classes shipped in
- * Google Play services 26.26.34, 26.36.35, 26.37.37 and 26.40.32.
+ * Google Play services builds listed in GmsCompatibility.
  */
 public final class FastPairHook implements IXposedHookLoadPackage {
     private static final String TAG = "[GmsFastPairDiag] ";
@@ -48,6 +48,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
     private static boolean modernGms;
     private static boolean latestGms;
     private static boolean gms2640;
+    private static boolean gms2643;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -60,6 +61,8 @@ public final class FastPairHook implements IXposedHookLoadPackage {
             return;
         }
 
+        // Device classification can be cached before Application.attach.
+        installSafely("CN feature query", FastPairHook::maskChinaFeatureForGms);
         log("loaded process=" + lpparam.processName);
         AtomicBoolean initialized = new AtomicBoolean();
         XposedHelpers.findAndHookMethod(Application.class, "attach", Context.class,
@@ -87,7 +90,8 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                                 log("unknown GMS version; obfuscated hooks disabled");
                                 return;
                             }
-                            gms2640 = "26.40.32".equals(mapping);
+                            gms2643 = "26.43.30".equals(mapping);
+                            gms2640 = gms2643 || "26.40.32".equals(mapping);
                             latestGms = gms2640 || "26.37.37".equals(mapping);
                             modernGms = latestGms || "26.36.35".equals(mapping);
                             installCompatibilityHooks(lpparam);
@@ -99,16 +103,16 @@ public final class FastPairHook implements IXposedHookLoadPackage {
     }
 
     private static void installCompatibilityHooks(XC_LoadPackage.LoadPackageParam lpparam) {
-        log("GMS mapping=" + (gms2640 ? "26.40.32" : latestGms ? "26.37.37" : modernGms ? "26.36.35" : "26.26.34"));
+        log("GMS mapping=" + (gms2643 ? "26.43.30" : gms2640 ? "26.40.32" : latestGms ? "26.37.37" : modernGms ? "26.36.35" : "26.26.34"));
         installSafely("components", () -> keepHalfSheetComponentEnabled());
         installSafely("web actions", () -> hookSpotClientActions(lpparam.classLoader));
         if (modernGms) {
             installSafely("fast pair", () -> hookBooleanGate(lpparam.classLoader,
-                    gms2640 ? "jyfd" : latestGms ? "jtzg" : "jsmh", latestGms ? "f" : "e", "fastPair", "enable_fast_pair_accessories"));
+                    gms2643 ? "kbia" : gms2640 ? "jyfd" : latestGms ? "jtzg" : "jsmh", gms2643 ? "g" : latestGms ? "f" : "e", "fastPair", "enable_fast_pair_accessories"));
             installSafely("self location", () -> hookBooleanGate(lpparam.classLoader,
-                    gms2640 ? "jyfd" : latestGms ? "jtzg" : "jsmh", latestGms ? "i" : "h", "selfLocation", "enable_self_location_reporting"));
+                    gms2643 ? "kbia" : gms2640 ? "jyfd" : latestGms ? "jtzg" : "jsmh", gms2643 ? "k" : latestGms ? "i" : "h", "selfLocation", "enable_self_location_reporting"));
             installSafely("spot integration", () -> hookBooleanGate(lpparam.classLoader,
-                    gms2640 ? "kbfk" : latestGms ? "jwys" : "jvlk", gms2640 ? "O" : "N", "spotIntegration", "enable_fast_pair_spot_integration"));
+                    gms2643 ? "keil" : gms2640 ? "kbfk" : latestGms ? "jwys" : "jvlk", gms2643 ? "P" : gms2640 ? "O" : "N", "spotIntegration", "enable_fast_pair_spot_integration"));
         } else {
             installSafely("fast pair", () -> hookSpotFastPairServerFlag(lpparam.classLoader));
             installSafely("self location", () -> hookSelfLocationReportingFlag(lpparam.classLoader));
@@ -126,6 +130,26 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         } catch (Throwable error) {
             log("hook skipped " + label + ": " + error.getClass().getSimpleName()
                     + " " + safe(error.getMessage()));
+        }
+    }
+
+    private static void maskChinaFeatureForGms() {
+        Class<?> pm = XposedHelpers.findClass("android.app.ApplicationPackageManager", null);
+        XC_MethodHook hook = new XC_MethodHook() {
+            @Override protected void afterHookedMethod(MethodHookParam param) {
+                if (!param.hasThrowable() && param.args.length > 0
+                        && "cn.google.services".equals(param.args[0])
+                        && Boolean.TRUE.equals(param.getResult())) {
+                    param.setResult(false);
+                    logOnce("cn-feature-masked", "masked cn.google.services within GMS");
+                }
+            }
+        };
+        XposedHelpers.findAndHookMethod(pm, "hasSystemFeature", String.class, hook);
+        try {
+            XposedHelpers.findAndHookMethod(pm, "hasSystemFeature", String.class, int.class, hook);
+        } catch (NoSuchMethodError ignored) {
+            log("versioned hasSystemFeature unavailable");
         }
     }
 
@@ -854,7 +878,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         try {
             Thread.sleep(5000L);
             Object client = XposedHelpers.newInstance(
-                    XposedHelpers.findClass(gms2640 ? "cjac" : latestGms ? "chpu" : modernGms ? "cgvp" : "cbil", loader),
+                    XposedHelpers.findClass(gms2643 ? "ckow" : gms2640 ? "cjac" : latestGms ? "chpu" : modernGms ? "cgvp" : "cbil", loader),
                     settingsApplication);
             Object request = XposedHelpers.newInstance(XposedHelpers.findClass(
                     "com.google.android.gms.findmydevice.spot."
@@ -869,7 +893,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
     }
 
     private static void hookConditionalSettingsReadback(final ClassLoader loader) {
-        Class<?> callback = XposedHelpers.findClassIfExists(gms2640 ? "cizz" : latestGms ? "chpr" : modernGms ? "cgvm" : "cbii", loader);
+        Class<?> callback = XposedHelpers.findClassIfExists(gms2643 ? "ckot" : gms2640 ? "cizz" : latestGms ? "chpr" : modernGms ? "cgvm" : "cbii", loader);
         if (callback == null) {
             log("cbii Find Hub settings callback not found");
             return;
@@ -930,7 +954,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
             XposedHelpers.setBooleanField(request, "d", true);
 
             Object client = XposedHelpers.newInstance(
-                    XposedHelpers.findClass(gms2640 ? "cjac" : latestGms ? "chpu" : modernGms ? "cgvp" : "cbil", loader),
+                    XposedHelpers.findClass(gms2643 ? "ckow" : gms2640 ? "cjac" : latestGms ? "chpu" : modernGms ? "cgvp" : "cbil", loader),
                     settingsApplication);
             XposedHelpers.callMethod(client, modernGms ? "b" : "f", request);
             log("submitted account Find Hub settings networkMode=2");
@@ -941,7 +965,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
     }
 
     private static void hookSettingsChangeResult(ClassLoader loader) {
-        Class<?> callback = XposedHelpers.findClassIfExists(gms2640 ? "cjaa" : latestGms ? "chps" : modernGms ? "cgvn" : "cbij", loader);
+        Class<?> callback = XposedHelpers.findClassIfExists(gms2643 ? "ckou" : gms2640 ? "cjaa" : latestGms ? "chps" : modernGms ? "cgvn" : "cbij", loader);
         if (callback == null) {
             log("cbij Find Hub settings change callback not found");
             return;
@@ -995,14 +1019,14 @@ public final class FastPairHook implements IXposedHookLoadPackage {
     private static void hookSpotClientActions(ClassLoader loader) {
         hookBooleanGate(
                 loader,
-                gms2640 ? "ckjj" : latestGms ? "ciza" : modernGms ? "cido" : "ccnl",
+                gms2643 ? "clya" : gms2640 ? "ckjj" : latestGms ? "ciza" : modernGms ? "cido" : "ccnl",
                 "a",
                 "finderUseCases",
                 "Find Hub GCM receiver Finder-use-case gate");
         hookBooleanGate(
                 loader,
-                gms2640 ? "jyfd" : latestGms ? "jtzg" : modernGms ? "jsmh" : "jwbd",
-                latestGms ? "j" : modernGms ? "i" : "k",
+                gms2643 ? "kbia" : gms2640 ? "jyfd" : latestGms ? "jtzg" : modernGms ? "jsmh" : "jwbd",
+                gms2643 ? "l" : latestGms ? "j" : modernGms ? "i" : "k",
                 "enableSpotClientActionsHandler",
                 "Find Hub flag enable_spot_client_actions_handler");
     }
@@ -1231,20 +1255,21 @@ public final class FastPairHook implements IXposedHookLoadPackage {
     }
 
     private static void hookLocatorTagEligibility(ClassLoader loader) {
-        Class<?> locatorHandler = XposedHelpers.findClassIfExists(gms2640 ? "ecvv" : latestGms ? "ealy" : modernGms ? "dzkw" : "drhl", loader);
+        Class<?> locatorHandler = XposedHelpers.findClassIfExists(gms2643 ? "efoh" : gms2640 ? "ecvv" : latestGms ? "ealy" : modernGms ? "dzkw" : "drhl", loader);
         if (locatorHandler == null) {
             log("drhl locator-tag handler not found");
             return;
         }
 
-        String key = locatorHandler.getName() + "#e:bypass";
+        String methodName = gms2643 ? "f" : "e";
+        String key = locatorHandler.getName() + "#" + methodName + ":bypass";
         if (!HOOKED.add(key)) {
             return;
         }
 
         Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(
                 locatorHandler,
-                "e",
+                methodName,
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
@@ -1259,7 +1284,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                         if (original instanceof Integer
                                 && ((Integer) original) == DEVICE_NOT_SUPPORTED) {
                             param.setResult(SUCCESS);
-                            log("bypass drhl#e DEVICE_NOT_SUPPORTED -> SUCCESS"
+                            log("bypass " + key + " DEVICE_NOT_SUPPORTED -> SUCCESS"
                                     + " model=" + TARGET_MODEL_ID);
                         }
                     }
@@ -1362,7 +1387,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
             return null;
         }
         for (Object arg : args) {
-            if (arg != null && (gms2640 ? "ecsn" : latestGms ? "eaiz" : modernGms ? "dzhx" : "dreq").equals(arg.getClass().getName())) {
+            if (arg != null && (gms2643 ? "efjb" : gms2640 ? "ecsn" : latestGms ? "eaiz" : modernGms ? "dzhx" : "dreq").equals(arg.getClass().getName())) {
                 return arg;
             }
         }
