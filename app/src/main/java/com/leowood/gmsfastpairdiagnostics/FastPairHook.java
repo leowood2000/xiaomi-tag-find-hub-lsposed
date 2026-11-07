@@ -61,6 +61,8 @@ public final class FastPairHook implements IXposedHookLoadPackage {
             return;
         }
 
+        // Device classification can be cached before Application.attach.
+        installSafely("CN feature query", FastPairHook::maskChinaFeatureForGms);
         log("loaded process=" + lpparam.processName);
         AtomicBoolean initialized = new AtomicBoolean();
         XposedHelpers.findAndHookMethod(Application.class, "attach", Context.class,
@@ -128,6 +130,26 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         } catch (Throwable error) {
             log("hook skipped " + label + ": " + error.getClass().getSimpleName()
                     + " " + safe(error.getMessage()));
+        }
+    }
+
+    private static void maskChinaFeatureForGms() {
+        Class<?> pm = XposedHelpers.findClass("android.app.ApplicationPackageManager", null);
+        XC_MethodHook hook = new XC_MethodHook() {
+            @Override protected void afterHookedMethod(MethodHookParam param) {
+                if (!param.hasThrowable() && param.args.length > 0
+                        && "cn.google.services".equals(param.args[0])
+                        && Boolean.TRUE.equals(param.getResult())) {
+                    param.setResult(false);
+                    logOnce("cn-feature-masked", "masked cn.google.services within GMS");
+                }
+            }
+        };
+        XposedHelpers.findAndHookMethod(pm, "hasSystemFeature", String.class, hook);
+        try {
+            XposedHelpers.findAndHookMethod(pm, "hasSystemFeature", String.class, int.class, hook);
+        } catch (NoSuchMethodError ignored) {
+            log("versioned hasSystemFeature unavailable");
         }
     }
 
