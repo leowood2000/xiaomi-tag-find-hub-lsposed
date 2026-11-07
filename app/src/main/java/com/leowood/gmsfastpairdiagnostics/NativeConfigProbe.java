@@ -41,9 +41,10 @@ final class NativeConfigProbe {
                     +" selfLocation="+XposedHelpers.callMethod(fmd,"v")
                     +" clientActions="+XposedHelpers.callMethod(fmd,"w")
                     +" finder="+XposedHelpers.callStaticMethod(XposedHelpers.findClass("clya",loader),"a"));
-            Class<?> apiType = XposedHelpers.findClass("eebe",loader);
-            Object api = XposedHelpers.callStaticMethod(XposedHelpers.findClass("echc",loader),"c",app,apiType);
-            log("raw SPOT API available="+XposedHelpers.callMethod(api,"a"));
+            // The availability checker requires a Nearby locator context,
+            // not the process-wide Application. Do not misreport that error
+            // as an unavailable binder or abort unrelated read-only checks.
+            log("SPOT API availability requires live Nearby-module context; not inferred here");
             String[] components={"nearby.discovery.fastpair.HalfSheetActivity",
                     "nearby.discovery.fastpair.slice.FastPairSliceProvider",
                     "nearby.discovery.service.DiscoveryService","nearby.discovery.devices.DevicesListActivity"};
