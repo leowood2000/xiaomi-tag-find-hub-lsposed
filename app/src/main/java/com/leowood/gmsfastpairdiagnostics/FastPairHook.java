@@ -104,7 +104,10 @@ public final class FastPairHook implements IXposedHookLoadPackage {
         NativeConfigProbe.install(lpparam.classLoader);
         log("GMS mapping=" + (gms2643 ? "26.43.30" : gms2640 ? "26.40.32" : latestGms ? "26.37.37" : modernGms ? "26.36.35" : "26.26.34"));
         if (!gms2643) installSafely("components", () -> keepHalfSheetComponentEnabled());
-        else log("research: component protection NOT installed");
+        else {
+            log("research: component protection NOT installed");
+            installSafely("component observer", () -> observeComponentChanges());
+        }
         installSafely("web actions", () -> hookSpotClientActions(lpparam.classLoader));
         if (modernGms) {
             installSafely("fast pair", () -> hookBooleanGate(lpparam.classLoader,
@@ -1197,6 +1200,22 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                 });
 
         log("hooked " + key + " overloads=" + unhooks.size());
+    }
+
+    private static void observeComponentChanges() {
+        XposedHelpers.findAndHookMethod("android.app.ApplicationPackageManager", null,
+                "setComponentEnabledSetting", ComponentName.class, int.class, int.class,
+                new XC_MethodHook() {
+                    @Override protected void beforeHookedMethod(MethodHookParam param) {
+                        ComponentName component = (ComponentName) param.args[0];
+                        if (component == null || !"com.google.android.gms".equals(component.getPackageName())
+                                || !PROTECTED_FAST_PAIR_COMPONENTS.contains(component.getClassName())) return;
+                        log("research component change observed component=" + component.getClassName()
+                                + " state=" + param.args[1] + " stack="
+                                + android.util.Log.getStackTraceString(new Throwable("component change")));
+                    }
+                });
+        log("research: component observer installed; no changes blocked");
     }
 
     private static void keepHalfSheetComponentEnabled() {
