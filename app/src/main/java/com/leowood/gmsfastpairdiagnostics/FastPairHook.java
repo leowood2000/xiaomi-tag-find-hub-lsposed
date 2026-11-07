@@ -103,7 +103,8 @@ public final class FastPairHook implements IXposedHookLoadPackage {
     private static void installCompatibilityHooks(XC_LoadPackage.LoadPackageParam lpparam) {
         NativeConfigProbe.install(lpparam.classLoader);
         log("GMS mapping=" + (gms2643 ? "26.43.30" : gms2640 ? "26.40.32" : latestGms ? "26.37.37" : modernGms ? "26.36.35" : "26.26.34"));
-        installSafely("components", () -> keepHalfSheetComponentEnabled());
+        if (!gms2643) installSafely("components", () -> keepHalfSheetComponentEnabled());
+        else log("research: component protection NOT installed");
         installSafely("web actions", () -> hookSpotClientActions(lpparam.classLoader));
         if (modernGms) {
             installSafely("fast pair", () -> hookBooleanGate(lpparam.classLoader,
@@ -830,6 +831,10 @@ public final class FastPairHook implements IXposedHookLoadPackage {
      * once when the main process starts.
      */
     private static void refreshOwnedDeviceCache(ClassLoader loader) {
+        if (gms2643) {
+            log("research: forced owned-device sync disabled");
+            return;
+        }
         if (settingsApplication == null
                 || !OWNED_DEVICE_SYNC_SENT.compareAndSet(false, true)) {
             return;
@@ -917,6 +922,10 @@ public final class FastPairHook implements IXposedHookLoadPackage {
     }
 
     private static void submitAccountSettings(ClassLoader loader) {
+        if (gms2643) {
+            log("research: automatic account settings writes disabled");
+            return;
+        }
         if (settingsApplication == null
                 || !SETTINGS_CHANGE_SENT.compareAndSet(false, true)) {
             return;
@@ -1269,7 +1278,7 @@ public final class FastPairHook implements IXposedHookLoadPackage {
                         Object original = param.getResult();
                         log("locator eligibility original=" + safe(original)
                                 + " request=" + describeRequest(request));
-                        if (original instanceof Integer
+                        if (!gms2643 && original instanceof Integer
                                 && ((Integer) original) == DEVICE_NOT_SUPPORTED) {
                             param.setResult(SUCCESS);
                             log("bypass " + key + " DEVICE_NOT_SUPPORTED -> SUCCESS"

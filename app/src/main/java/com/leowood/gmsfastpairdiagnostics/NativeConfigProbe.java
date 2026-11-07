@@ -41,6 +41,9 @@ final class NativeConfigProbe {
                     +" selfLocation="+XposedHelpers.callMethod(fmd,"v")
                     +" clientActions="+XposedHelpers.callMethod(fmd,"w")
                     +" finder="+XposedHelpers.callStaticMethod(XposedHelpers.findClass("clya",loader),"a"));
+            Class<?> apiType = XposedHelpers.findClass("eebe",loader);
+            Object api = XposedHelpers.callStaticMethod(XposedHelpers.findClass("echc",loader),"c",app,apiType);
+            log("raw SPOT API available="+XposedHelpers.callMethod(api,"a"));
             String[] components={"nearby.discovery.fastpair.HalfSheetActivity",
                     "nearby.discovery.fastpair.slice.FastPairSliceProvider",
                     "nearby.discovery.service.DiscoveryService","nearby.discovery.devices.DevicesListActivity"};
