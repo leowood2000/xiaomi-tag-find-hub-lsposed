@@ -36,6 +36,17 @@ final class NativeConfigProbe {
             Class<?> config = XposedHelpers.findClass("kgkv", loader);
             Object raw = XposedHelpers.callMethod(XposedHelpers.newInstance(config), "l");
             log("raw enableDebugService=" + raw);
+            Object fmd = XposedHelpers.newInstance(XposedHelpers.findClass("kbic",loader));
+            log("raw FMD accessories="+XposedHelpers.callMethod(fmd,"n")
+                    +" selfLocation="+XposedHelpers.callMethod(fmd,"v")
+                    +" clientActions="+XposedHelpers.callMethod(fmd,"w")
+                    +" finder="+XposedHelpers.callStaticMethod(XposedHelpers.findClass("clya",loader),"a"));
+            String[] components={"nearby.discovery.fastpair.HalfSheetActivity",
+                    "nearby.discovery.fastpair.slice.FastPairSliceProvider",
+                    "nearby.discovery.service.DiscoveryService","nearby.discovery.devices.DevicesListActivity"};
+            for(String component:components) log("component "+component+" state="+
+                    app.getPackageManager().getComponentEnabledSetting(new android.content.ComponentName(
+                            "com.google.android.gms","com.google.android.gms."+component)));
             log("raw SPOT getter="+XposedHelpers.callMethod(
                     XposedHelpers.newInstance(XposedHelpers.findClass("kein",loader)),"az")
                     +" unhooked facade="+XposedHelpers.callStaticMethod(

@@ -1021,6 +1021,10 @@ public final class FastPairHook implements IXposedHookLoadPackage {
             String methodName,
             String keySuffix,
             String label) {
+        if (gms2643) {
+            log("research: boolean gate NOT hooked: " + className + "#" + methodName);
+            return;
+        }
         Class<?> type = XposedHelpers.findClassIfExists(className, loader);
         if (type == null) {
             log(className + " not found for " + keySuffix);
